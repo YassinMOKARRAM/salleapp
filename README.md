@@ -19,9 +19,18 @@ Pour récupérer tes données (nouveau téléphone…) : « Restaurer depuis un 
 
 ## Modifier le programme
 
-Change `js/data.js`, puis augmente le numéro `VERSION` dans `sw.js`, et remets les deux fichiers
-sur GitHub. L'app se met à jour au lancement suivant.
-Ne change pas les `id` des exercices : tes réglages y sont rattachés.
+Directement dans l'app : onglet Séances → « Modifier » au-dessus des exercices.
+Tu peux changer le nom de la séance, ajouter, modifier, supprimer ou réordonner les exercices
+(séries, répétitions, repos, consigne, % du 1RM, dropset, poids du corps).
+Les changements s'appliquent au jour de la semaine choisi et sont inclus dans la sauvegarde Fichiers.
+« Revenir au programme d'origine » (Réglages) remet le contenu de `js/data.js`.
+
+## Suivre sa progression
+
+- Charges : sur chaque exercice, « Noter » enregistre la charge et les répétitions (et coche l'exercice).
+  La semaine suivante, l'app affiche « Dernière fois » et un conseil pour progresser.
+- Onglet Évolution : poids de corps (« Pesée », courbe, objectif) et progression des charges par exercice.
+- Note de séance : sous la liste des exercices, enregistrée automatiquement.
 
 ## Ce qui est public
 

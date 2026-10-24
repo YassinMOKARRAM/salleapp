@@ -1,7 +1,7 @@
 // Fait fonctionner l'app sans connexion : tous les fichiers sont gardés sur le téléphone.
 // Les mises à jour (nouveau programme…) sont récupérées en arrière-plan et visibles au lancement suivant.
 // Change ce numéro à chaque modification pour forcer la mise à jour.
-const VERSION = "salle-2026-10-24-1";
+const VERSION = "salle-2026-10-24-5";
 
 const ASSETS = [
   "./",
@@ -20,7 +20,7 @@ const ASSETS = [
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(VERSION).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(VERSION).then((cache) => cache.addAll(ASSETS.map((u) => new Request(u, { cache: "reload" })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (event) => {

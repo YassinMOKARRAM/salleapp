@@ -314,6 +314,17 @@ main { min-width: 0; padding-bottom: calc(var(--tab-h) + env(safe-area-inset-bot
 
 /* Poids de corps */
 .bw-section { margin-top: 1.6rem; }
+.page-head + .bw-section { margin-top: 0; }
+.evo-charges { margin-top: 1.6rem; }
+.evo-row { gap: 0.6rem; }
+.evo-row b { display: block; font-weight: 600; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.evo-row .grow small { display: block; color: var(--label-2); font-size: 0.82rem; margin-top: 0.1rem; }
+.evo-val { text-align: right; flex: none; }
+.evo-val small { display: block; font-size: 0.8rem; font-weight: 600; color: var(--label-2); }
+.evo-val small.up { color: var(--green); }
+.evo-val small.down { color: var(--orange); }
+.sheet-card { background: var(--sheet-row); margin-bottom: 1.1rem; }
+.sheet-card .bw-chart { margin-top: 0; }
 .bw-card { padding: 1rem; }
 .bw-top { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; }
 .bw-value { font-size: 2.2rem; font-weight: 700; letter-spacing: -0.025em; line-height: 1.05; }
@@ -658,3 +669,4 @@ main { min-width: 0; padding-bottom: calc(var(--tab-h) + env(safe-area-inset-bot
   :root { --sep: var(--label-2); --label-2: var(--label); --material: var(--bg-2); --hud: var(--bg-2); }
   .group, .tile, .sheet .group-list, .field-big, .pill, .btn, .timer, .seg { box-shadow: 0 0 0 1px var(--label); }
 }
+.sheet-card .bw-chart .end, .sheet-card .bw-chart .cross-d { stroke: var(--sheet-row); }

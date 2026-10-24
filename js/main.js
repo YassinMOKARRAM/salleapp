@@ -172,6 +172,7 @@ function renderShell() {
   <nav class="bottombar" aria-label="Navigation principale">
     <button data-action="tab" data-tab="seances">${ICON.dumbbell}<span>Séances</span></button>
     <button data-action="tab" data-tab="calendrier">${ICON.calendar}<span>Calendrier</span></button>
+    <button data-action="tab" data-tab="evolution">${ICON.chart}<span>Évolution</span></button>
   </nav>`;
   onScroll();
 }
@@ -183,6 +184,7 @@ function renderAll() {
   $("#tabs-host").innerHTML = segHTML("seg-tabs", "Onglets", "tab", "tab", [
     { value: "seances", label: `${ICON.dumbbell} Séances` },
     { value: "calendrier", label: `${ICON.calendar} Calendrier` },
+    { value: "evolution", label: `${ICON.chart} Évolution` },
   ], S.tab);
   renderView();
   renderSide();
@@ -199,7 +201,7 @@ function renderView() {
   const view = $("#view");
   const prevFrise = $("#frise");
   if (prevFrise) S.friseLeft = prevFrise.scrollLeft;
-  view.innerHTML = S.tab === "seances" ? seancesHTML() : calendrierHTML();
+  view.innerHTML = S.tab === "seances" ? seancesHTML() : S.tab === "evolution" ? evolutionHTML() : calendrierHTML();
   if (S.tab === "seances") {
     paintWeek(weekSpring.value);
     attachWeekGesture();
@@ -671,6 +673,60 @@ function dayExtrasHTML(iso) {
     ${note ? `<p class="t-eyebrow list-title">Note</p><div class="group-list"><p class="note-read">${esc(note)}</p></div>` : ""}`;
 }
 
+/* ----- onglet Évolution ----- */
+function evolutionHTML() {
+  return `<section class="page-head"><h1 class="t-large">Évolution</h1>
+      <p class="t-sub">Ton poids et tes charges au fil des semaines</p></section>
+    ${bodyWeightHTML()}
+    ${chargesHTML()}`;
+}
+
+function setDelta(first, last) {
+  if (first.w != null && last.w != null && first.w !== last.w) {
+    const d = Math.round((last.w - first.w) * 100) / 100;
+    return { text: `${d > 0 ? "+" : "−"}${formatKg(Math.abs(d))}`, up: d > 0 };
+  }
+  if (first.r && last.r && first.r !== last.r) {
+    const d = last.r - first.r;
+    return { text: `${d > 0 ? "+" : "−"}${Math.abs(d)} rép.`, up: d > 0 };
+  }
+  return { text: "stable", up: null };
+}
+
+function chargesHTML() {
+  const rows = [];
+  for (const day of [...S.program.days].sort((a, b) => a.day - b.day)) {
+    for (const ex of day.exercises) {
+      const h = logHistory(ex.id);
+      if (!h.length) continue;
+      const last = h[0], first = h[h.length - 1];
+      const d = h.length > 1 ? setDelta(first, last) : null;
+      rows.push(`<button class="list-row row-press evo-row" data-action="ex-history" data-id="${esc(ex.id)}">
+        <span class="grow"><b>${esc(ex.name)}</b><small>${esc(day.weekday || WEEKDAYS[day.day - 1])} · ${h.length} séance${h.length > 1 ? "s" : ""}</small></span>
+        <span class="evo-val"><b class="num">${esc(fmtSet(last))}</b>${d ? `<small class="${d.up === true ? "up" : d.up === false ? "down" : ""}">${esc(d.text)}</small>` : ""}</span>
+        <span class="chev-sm">${ICON.right}</span></button>`);
+    }
+  }
+  return `<section class="evo-charges" aria-label="Charges">
+    <div class="stats-head"><h2 class="t-title2">Charges</h2></div>
+    ${rows.length ? `<div class="group-list">${rows.join("")}</div>
+      <p class="note pad">Écart entre ta première et ta dernière série notée.</p>`
+      : `<div class="group bw-card"><p class="t-sub">Pendant tes séances, touche « Noter » sur un exercice : ta progression apparaîtra ici.</p></div>`}
+  </section>`;
+}
+
+function openHistory(id) {
+  const ex = S.ctx.exercises.get(id);
+  if (!ex) return;
+  const h = logHistory(id);
+  S.modal = { kind: "history", id };
+  const weights = h.filter((x) => typeof x.w === "number" && x.w > 0).map((x) => ({ date: x.date, w: x.w })).reverse();
+  openModal(sheet(esc(ex.name), `${esc(ex.reps)} · ${h.length} séance${h.length > 1 ? "s" : ""}`, `
+    ${weights.length >= 2 ? `<div class="group bw-card sheet-card">${weightChartSVG(weights, null, `Courbe des charges, ${ex.name}`)}</div>` : ""}
+    <p class="t-eyebrow list-title">Historique</p>
+    <div class="group-list">${h.map((x) => `<div class="list-row result"><small>${esc(shortDay(x.date))}</small><b>${esc(fmtSet(x))}</b></div>`).join("")}</div>`));
+}
+
 /* ----- poids de corps ----- */
 function weighIns() {
   const out = [];
@@ -714,7 +770,7 @@ function bodyWeightHTML() {
 }
 
 /** Courbe simple (une seule série : pas de légende, le titre la nomme). */
-function weightChartSVG(list, goal) {
+function weightChartSVG(list, goal, label = "Courbe du poids de corps") {
   const W = 320, H = 140, padL = 34, padR = 12, padT = 12, padB = 22;
   const t0 = Date.parse(`${list[0].date}T00:00:00Z`), t1 = Date.parse(`${list[list.length - 1].date}T00:00:00Z`);
   const vals = list.map((x) => x.w).concat(goal ? [goal.to] : []);
@@ -729,7 +785,7 @@ function weightChartSVG(list, goal) {
   const lastP = pts[pts.length - 1];
   const data = esc(JSON.stringify(list.map((p, i) => ({ x: pts[i][0], y: pts[i][1], t: `${shortDay(p.date)} · ${formatKg(p.w)}` }))));
   return `<figure class="bw-chart" data-points="${data}">
-    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Courbe du poids de corps, de ${esc(formatKg(list[0].w))} à ${esc(formatKg(list[list.length - 1].w))}">
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}, de ${esc(formatKg(list[0].w))} à ${esc(formatKg(list[list.length - 1].w))}">
       ${ticks.map((t) => `<line class="grid" x1="${padL}" x2="${W - padR}" y1="${y(t)}" y2="${y(t)}"/><text class="tick" x="${padL - 6}" y="${y(t) + 3.5}" text-anchor="end">${t}</text>`).join("")}
       ${goal ? `<line class="goal-line" x1="${padL}" x2="${W - padR}" y1="${y(goal.to)}" y2="${y(goal.to)}"/><text class="tick goal-txt" x="${W - padR}" y="${y(goal.to) - 5}" text-anchor="end">Objectif ${numFr(goal.to)}</text>` : ""}
       <path class="area" d="${area}"/>
@@ -1050,8 +1106,7 @@ function calendrierHTML() {
       <span><i class="sw done"></i>Fait</span><span><i class="sw missed"></i>Non fait</span>
       <span><i class="sw rest"></i>Repos / annulé</span><span><i class="sw empty"></i>Non renseigné</span>
     </div>
-    ${statsCardHTML()}
-    ${bodyWeightHTML()}`;
+    ${statsCardHTML()}`;
 }
 
 function cellLabel(iso, st) {
@@ -1768,6 +1823,7 @@ function onAction(el) {
     case "bw-edit": return openWeighIn(el.dataset.date);
     case "bw-save": return saveWeighIn();
     case "bw-delete": return deleteWeighIn();
+    case "ex-history": return openHistory(id);
     case "edit-start": S.editing = true; renderAll(); return;
     case "edit-done": saveDayTitle(); S.editing = false; renderAll(); return;
     case "ex-edit": return openExEditor(id);
