@@ -229,10 +229,6 @@ function backupDue() {
 
 function bannersHTML() {
   let out = "";
-  if (!isStandalone()) {
-    out += `<section class="banner group"><p class="t-headline">Ajoute Salle à ton écran d'accueil</p>
-      <p class="t-sub">Dans Safari : Partager, puis « Sur l'écran d'accueil ». Ensuite, ouvre toujours Salle depuis l'icône : c'est là que tes données sont gardées.</p></section>`;
-  }
   const lastBw = latestWeighIn();
   if (lastBw && diffDaysSimple(lastBw.date, S.today) >= 7) {
     out += `<section class="banner group"><p class="t-headline">Pense à te peser</p>
