@@ -5,7 +5,7 @@ import {
   monthLabelFr, monthsOfPeriod, parseDecimalInput, planFor, restSeconds, shortDate, todayInTZ, usesRM,
   validateEntry, validateImport, weekLabel, weekNumber, weekdayIndex, workingLoad, periodEnd, checkProgram,
 } from "./core.js";
-import { askPersistence, createLocalStore, loadProfile, saveProfile } from "./store.js";
+import { askPersistence, clearProgram, createLocalStore, loadProfile, loadProgram, saveProfile, saveProgramData } from "./store.js";
 import { CONFIG, PROGRAM } from "./data.js";
 import { HYSTERESIS, Spring, VelocityTracker, clamp, haptic, project, reducedMotion, rubberband } from "./motion.js";
 
@@ -26,6 +26,9 @@ const ICON = {
   calendar: svg('<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/>'),
   left: svg('<path d="M15 5l-7 7 7 7"/>'),
   right: svg('<path d="M9 5l7 7-7 7"/>'),
+  up: svg('<path d="M6 15l6-6 6 6"/>'),
+  down: svg('<path d="M6 9l6 6 6-6"/>'),
+  plus: svg('<path d="M12 5v14M5 12h14"/>'),
 };
 const ST = {
   "Fait": { cls: "done", icon: ICON.check, short: "Fait" },
@@ -82,7 +85,7 @@ function boot() {
   const profile = loadProfile();
   startApp({
     config: { ...CONFIG, end: periodEnd(CONFIG.start), firstName: profile.firstName, goal: profile.goal },
-    program: PROGRAM,
+    program: loadProgram(PROGRAM, checkProgram),
   });
   askPersistence();
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
@@ -185,6 +188,8 @@ function renderAll() {
     else b.removeAttribute("aria-current");
   }
   syncSegments();
+  syncProgress();
+  revealNext();
 }
 
 function renderView() {
@@ -265,10 +270,14 @@ function seancesHTML() {
   const monday = addDays(iso, -wi);
   S.weekNav = { prev: addDays(monday, -1) >= S.start, next: addDays(monday, 7) <= S.end };
 
-  const heroMeta = plan.isRest ? "Jour de repos" : `${n} exercice${n > 1 ? "s" : ""}`;
+  const done = doneSet(iso);
+  const nDone = plan.exercises.filter((e) => done.has(e.id)).length;
+  const allDone = n > 0 && nDone === n;
+  const heroMeta = plan.isRest ? "Jour de repos"
+    : nDone ? `${nDone} sur ${n} exercice${n > 1 ? "s" : ""} faits` : `${n} exercice${n > 1 ? "s" : ""}`;
   const finish = dayStatus(iso) === "Fait"
     ? `<button class="btn wide press" data-action="open-day" data-date="${iso}">${ICON.check} Séance faite · corriger</button>`
-    : `<button class="btn filled wide press" data-action="finish">${ICON.check} Séance terminée</button>`;
+    : `<button class="btn filled wide press ${allDone ? "ready" : ""}" data-action="finish">${ICON.check} ${allDone ? "Tout est fait · pointer la séance" : "Séance terminée"}</button>`;
   const anchor = weekLabel(monday < S.start ? S.start : monday, S.start);
 
   return `${bannersHTML()}${greetingHTML()}
@@ -292,13 +301,290 @@ function seancesHTML() {
         </div>
       </div>
     </section>
-    ${plan.isRest
-      ? `<section class="rest-day group"><h3 class="t-headline">Jour de repos</h3><p class="t-sub">Rien de prévu ce jour-là. Tu peux quand même le pointer.</p></section>`
-      : `<p class="t-eyebrow section-title">Exercices</p>
-         <section class="exlist group" aria-label="Exercices">${plan.exercises.map(exerciseHTML).join("")}</section>${finish}`}`;
+    ${S.editing ? editListHTML(iso, plan)
+      : plan.isRest
+      ? `<section class="rest-day group"><h3 class="t-headline">Jour de repos</h3><p class="t-sub">Rien de prévu ce jour-là. Tu peux quand même le pointer.</p>
+          <button class="btn small press" style="margin-top:0.9rem" data-action="edit-start">${ICON.plus} Prévoir une séance ce jour-là</button></section>`
+      : `<div class="progress-head"><p class="t-eyebrow">Exercices</p>
+           <span class="ph-right"><span class="t-sub num" id="progress-count">${nDone}/${n}</span>
+           <button class="btn small plain press" data-action="edit-start">Modifier</button></span></div>
+         <div class="progress" id="progress" role="progressbar" aria-label="Progression de la séance" aria-valuemin="0" aria-valuemax="${n}" aria-valuenow="${nDone}"><span></span></div>
+         <section class="exlist group" aria-label="Exercices">${plan.exercises.map((ex, i) => exerciseHTML(ex, i, done, nextId(plan, done))).join("")}</section>${finish}`}`;
 }
 
-function exerciseHTML(ex, i) {
+/* ----- éditeur du programme (s'applique au jour de la semaine) ----- */
+const DAY_PREFIX = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
+const REST_CHOICES = ["—", "30 s", "45 s", "60 s", "60–90 s", "90 s", "90–120 s", "2 min", "2–3 min", "3 min", "3–4 min", "4 min", "5 min"];
+
+function dayOf(program, wi) {
+  let d = program.days.find((x) => x.day === wi + 1);
+  if (!d) {
+    d = { day: wi + 1, weekday: WEEKDAYS[wi], title: "Repos", exercises: [] };
+    program.days.push(d);
+    program.days.sort((a, b) => a.day - b.day);
+  }
+  return d;
+}
+
+/** Modifie une copie du programme, la vérifie, l'enregistre sur le téléphone puis réaffiche. */
+function mutateProgram(fn, { render = true } = {}) {
+  const p = structuredClone(S.program);
+  fn(p);
+  for (const d of p.days) {
+    if (!d.exercises.length) d.title = "Repos";
+    else if (!d.title || d.title === "Repos") d.title = "Séance";
+  }
+  const errors = checkProgram(p);
+  if (errors.length) { toast(errors[0]); return false; }
+  if (!saveProgramData(p)) { toast("Impossible d'enregistrer sur cet appareil."); return false; }
+  S.program = p;
+  S.ctx = buildContext(p, S.start);
+  if (render) renderAll();
+  return true;
+}
+
+function editListHTML(iso, plan) {
+  const wi = weekdayIndex(iso);
+  const day = WEEKDAYS[wi].toLowerCase();
+  const rows = plan.exercises.map((ex, i) => `<div class="ex-edit">
+      <button class="ex-edit-main row-press" data-action="ex-edit" data-id="${esc(ex.id)}">
+        <span class="grow"><b>${esc(ex.name)}</b><small>${esc(ex.reps)}${ex.rest && ex.rest !== "—" ? ` · repos ${esc(ex.rest)}` : ""}</small></span>
+        <span class="chev-sm">${ICON.right}</span></button>
+      <button class="chev press" data-action="ex-move" data-id="${esc(ex.id)}" data-dir="-1" aria-label="Monter ${esc(ex.name)}" ${i === 0 ? "disabled" : ""}>${ICON.up}</button>
+      <button class="chev press" data-action="ex-move" data-id="${esc(ex.id)}" data-dir="1" aria-label="Descendre ${esc(ex.name)}" ${i === plan.exercises.length - 1 ? "disabled" : ""}>${ICON.down}</button>
+    </div>`).join("");
+  return `<div class="progress-head"><p class="t-eyebrow">Séance du ${day}</p>
+      <button class="btn small plain press strong" data-action="edit-done">Terminé</button></div>
+    <p class="note pad" style="margin:0 0 0.65rem">Les changements s'appliquent à tous les ${day}s.</p>
+    <div class="group-list edit-title">
+      <label class="list-row"><span class="grow">Nom de la séance</span>
+        <input class="inline-input wide" id="day-title" value="${esc(plan.isRest ? "" : plan.title)}" placeholder="Ex. Dos + biceps" maxlength="40" enterkeyhint="done"></label>
+    </div>
+    <section class="exlist group edit" aria-label="Exercices">${rows}
+      <button class="list-row tint row-press add-row" data-action="ex-add">${ICON.plus} Ajouter un exercice</button>
+    </section>`;
+}
+
+function saveDayTitle(silent = false) {
+  const input = $("#day-title");
+  if (!input) return;
+  const wi = weekdayIndex(S.selected);
+  const title = input.value.trim().slice(0, 40);
+  const cur = dayOf(structuredClone(S.program), wi);
+  if (!cur.exercises.length || title === cur.title || !title) return;
+  // En quittant le champ, on enregistre sans tout réafficher : le bouton touché reste en place.
+  if (mutateProgram((p) => { dayOf(p, wi).title = title; }, { render: !silent }) && silent) {
+    const t = $(".hero .title");
+    if (t) t.textContent = title;
+  }
+}
+
+function splitReps(reps) {
+  const m = /^\s*(\d{1,2})\s*[×x]\s*(.+)$/i.exec(reps || "");
+  return m ? { series: m[1], reps: m[2].trim() } : { series: "", reps: (reps || "").trim() };
+}
+
+function exEditorHTML(ex, isNew) {
+  const wi = weekdayIndex(S.selected);
+  const r = splitReps(ex.reps);
+  const rest = ex.rest || "—";
+  const restOpts = (REST_CHOICES.includes(rest) ? REST_CHOICES : [rest, ...REST_CHOICES])
+    .map((v) => `<option value="${esc(v)}" ${v === rest ? "selected" : ""}>${v === "—" ? "Aucun" : esc(v)}</option>`).join("");
+  const pct = typeof ex.percent === "number" ? String(Math.round(ex.percent * 1000) / 10).replace(".", ",") : "";
+  const dropPct = typeof ex.dropPercent === "number" ? String(Math.round(ex.dropPercent * 1000) / 10).replace(".", ",") : "25";
+  const bw = exerciseModes(ex).length > 0;
+  return sheet(isNew ? "Nouvel exercice" : "Modifier l'exercice", `Séance du ${WEEKDAYS[wi].toLowerCase()}`, `
+    <div class="group-list">
+      <label class="list-row"><span class="grow">Nom</span>
+        <input class="inline-input wide" id="ef-name" value="${esc(ex.name || "")}" placeholder="Ex. Tirage vertical" maxlength="60" autocapitalize="sentences"></label>
+    </div>
+    <div class="group-list">
+      <label class="list-row"><span class="grow">Séries</span>
+        <input class="inline-input num" id="ef-series" inputmode="numeric" value="${esc(r.series)}" placeholder="—" maxlength="2"></label>
+      <label class="list-row"><span class="grow">Répétitions ou durée</span>
+        <input class="inline-input num" id="ef-reps" value="${esc(r.reps)}" placeholder="8–12" maxlength="40"></label>
+      <label class="list-row"><span class="grow">Repos</span>
+        <select class="inline-select" id="ef-rest">${restOpts}</select></label>
+      <label class="list-row"><span class="grow">Consigne</span>
+        <input class="inline-input wide" id="ef-method" value="${esc(ex.method || "")}" placeholder="Au feeling" maxlength="40"></label>
+    </div>
+    <p class="t-eyebrow list-title">Charge</p>
+    <div class="group-list">
+      <label class="list-row"><span class="grow">Poids du corps</span>
+        <input type="checkbox" class="switch" id="ef-bw" ${bw ? "checked" : ""}></label>
+      <label class="list-row" id="ef-pct-row" ${bw ? "hidden" : ""}><span class="grow">% du 1RM</span>
+        <input class="inline-input num" id="ef-pct" inputmode="decimal" value="${esc(pct)}" placeholder="Au feeling" maxlength="5"></label>
+      <label class="list-row"><span class="grow">Dropset à l'échec</span>
+        <input type="checkbox" class="switch" id="ef-drop" ${ex.drop ? "checked" : ""}></label>
+      <label class="list-row" id="ef-drop-row" ${ex.drop ? "" : "hidden"}><span class="grow">Baisse de la charge (%)</span>
+        <input class="inline-input num" id="ef-droppct" inputmode="decimal" value="${esc(dropPct)}" maxlength="4"></label>
+    </div>
+    <p class="error" id="ef-error" role="alert" style="margin-top:-0.6rem"></p>
+    <div class="actions-2">
+      <button class="btn press" data-action="close-modal">Annuler</button>
+      <button class="btn filled press" data-action="ex-save">Enregistrer</button>
+    </div>
+    ${isNew ? "" : `<button class="btn plain danger wide press" style="margin-top:0.4rem" data-action="ex-delete">Supprimer l'exercice</button>`}`);
+}
+
+function openExEditor(id) {
+  const plan = planFor(S.program, S.selected);
+  const ex = id ? plan.exercises.find((e) => e.id === id) : null;
+  if (id && !ex) return;
+  S.modal = { kind: "ex-edit", id: id || null, armed: false };
+  openModal(exEditorHTML(ex || { name: "", reps: "", rest: "90–120 s", method: "", percent: null, drop: false, dropPercent: null }, !ex),
+    ex ? null : "#ef-name");
+}
+
+function saveExEditor() {
+  const err = (m) => { $("#ef-error").textContent = m; };
+  const name = $("#ef-name").value.trim().replace(/\s+/g, " ");
+  const series = $("#ef-series").value.trim();
+  const reps = $("#ef-reps").value.trim().replace(/(\d)\s*-\s*(\d)/g, "$1–$2");
+  const rest = $("#ef-rest").value;
+  const method = $("#ef-method").value.trim().slice(0, 40);
+  const bw = $("#ef-bw").checked;
+  const drop = $("#ef-drop").checked;
+  if (!name) return err("Donne un nom à l'exercice.");
+  if (series && !/^\d{1,2}$/.test(series)) return err("Séries : un nombre entre 1 et 99.");
+  if (series && Number(series) < 1) return err("Séries : au moins 1.");
+  if (!reps) return err("Indique les répétitions ou la durée (ex. 8–12, 30 s, 15 min).");
+  let percent = null;
+  if (!bw) {
+    const pc = parseDecimalInput($("#ef-pct").value, { min: 0, max: 150, unit: "%" });
+    if (!pc.ok) return err(`% du 1RM : ${pc.error}`);
+    if (!pc.empty) percent = Math.round(pc.value * 10) / 1000;
+  }
+  let dropPercent = null;
+  if (drop) {
+    const dp = parseDecimalInput($("#ef-droppct").value, { min: 0, max: 90, unit: "%" });
+    if (!dp.ok || dp.empty) return err("Baisse du dropset : un pourcentage entre 1 et 90.");
+    dropPercent = Math.round(dp.value * 10) / 1000;
+  }
+  const wi = weekdayIndex(S.selected);
+  const id = S.modal.id || `${DAY_PREFIX[wi]}-${Date.now().toString(36)}`;
+  const pctText = percent ? `${String(Math.round(percent * 1000) / 10).replace(".", ",")} % du 1RM` : "";
+  // « Au feeling » n'a plus de sens si un % du 1RM est fixé.
+  const finalMethod = percent && (!method || /feeling/i.test(method)) ? pctText
+    : method || (bw ? "Poids du corps" : "Au feeling");
+  const ex = {
+    id, name: name.slice(0, 60), reps: (series ? `${Number(series)} × ${reps}` : reps).slice(0, 40), rest,
+    method: finalMethod,
+    percent, rmKey: null, drop, dropPercent, bodyweight: bw,
+  };
+  if (bw) ex.modes = ["PDC", "Lesté", "Assisté"];
+  const isNew = !S.modal.id;
+  const ok = mutateProgram((p) => {
+    const d = dayOf(p, wi);
+    const i = d.exercises.findIndex((e) => e.id === id);
+    if (i >= 0) d.exercises[i] = ex;
+    else d.exercises.push(ex);
+  });
+  if (!ok) return;
+  closeModal();
+  toast(isNew ? "Exercice ajouté" : "Exercice modifié");
+}
+
+function deleteExercise() {
+  const btn = $("[data-action=ex-delete]");
+  if (!S.modal.armed) {
+    // Deux appuis : la suppression efface aussi les réglages de cet exercice.
+    S.modal.armed = true;
+    btn.textContent = "Confirmer la suppression";
+    btn.classList.add("armed");
+    return;
+  }
+  const id = S.modal.id;
+  const wi = weekdayIndex(S.selected);
+  if (mutateProgram((p) => { const d = dayOf(p, wi); d.exercises = d.exercises.filter((e) => e.id !== id); })) {
+    closeModal();
+    toast("Exercice supprimé");
+  }
+}
+
+function moveExercise(id, dir) {
+  const wi = weekdayIndex(S.selected);
+  mutateProgram((p) => {
+    const list = dayOf(p, wi).exercises;
+    const i = list.findIndex((e) => e.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+  });
+}
+
+function resetProgram() {
+  const btn = $("[data-action=program-reset]");
+  if (!btn.classList.contains("armed")) {
+    btn.classList.add("armed");
+    btn.textContent = "Confirmer : revenir au programme d'origine";
+    return;
+  }
+  clearProgram();
+  S.program = PROGRAM;
+  S.ctx = buildContext(PROGRAM, S.start);
+  closeModal();
+  renderAll();
+  toast("Programme d'origine rétabli");
+}
+
+/* ----- exercices cochés pendant la séance ----- */
+const doneSet = (iso) => new Set(S.store.get(`ex:${iso}`) || []);
+const nextId = (plan, done) => (plan.exercises.find((e) => !done.has(e.id)) || {}).id;
+
+function toggleExercise(id) {
+  const iso = S.selected;
+  const plan = planFor(S.program, iso);
+  if (!plan.exercises.some((e) => e.id === id)) return;
+  const done = doneSet(iso);
+  const adding = !done.has(id);
+  if (adding) done.add(id);
+  else done.delete(id);
+  const ids = plan.exercises.map((e) => e.id).filter((x) => done.has(x));
+  S.justChecked = adding ? id : null;
+  if (adding) haptic();
+  S.store.set(`ex:${iso}`, ids.length ? ids : null);
+  if (adding && ids.length === plan.exercises.length && dayStatus(iso) !== "Fait") toast("Séance complète, pense à la pointer");
+}
+
+// La barre de progression glisse vers sa nouvelle valeur au lieu de sauter.
+const progressSpring = new Spring(0, { onUpdate: (v) => paintProgress(v) });
+let progressDate = "";
+function paintProgress(v) {
+  const bar = $("#progress span");
+  if (bar) bar.style.transform = `scaleX(${clamp(v, 0, 1)})`;
+}
+function syncProgress() {
+  const el = $("#progress");
+  if (!el) return;
+  const n = Number(el.getAttribute("aria-valuemax")) || 1;
+  const target = Number(el.getAttribute("aria-valuenow")) / n;
+  if (progressDate !== S.selected || reducedMotion()) {
+    progressDate = S.selected;
+    progressSpring.set(target);
+  } else if (progressSpring.target !== target) {
+    progressSpring.to(target, { damping: 1, response: 0.4, precision: 0.002 });
+  }
+  paintProgress(progressSpring.value);
+}
+
+/** Après avoir coché, l'exercice suivant vient se placer sous les yeux. */
+function revealNext() {
+  const id = S.justChecked;
+  S.justChecked = null;
+  if (!id) return;
+  const ring = document.querySelector(`.ex[data-ex="${CSS.escape(id)}"] .ring`);
+  if (ring && !reducedMotion()) ring.classList.add("pop");
+  const next = $(".ex.is-next");
+  if (!next) return;
+  const r = next.getBoundingClientRect();
+  const bottomLimit = innerHeight - (isDesktop() ? 24 : 150);
+  if (r.top < 70 || r.bottom > bottomLimit) {
+    next.scrollIntoView({ block: "center", behavior: reducedMotion() ? "auto" : "smooth" });
+  }
+}
+
+function exerciseHTML(ex, i, done = new Set(), next = null) {
   const rs = restSeconds(ex.rest);
   const modes = exerciseModes(ex);
   let loadBtn = "";
@@ -323,9 +609,13 @@ function exerciseHTML(ex, i) {
     : "";
   const actions = [restBtn, loadBtn].filter(Boolean);
   const showMethod = ex.method && !(usesRM(ex) && /%/.test(ex.method));
-  return `<article class="ex">
-    <span class="ex-num" aria-hidden="true">${i + 1}</span>
-    <div><h3>${esc(ex.name)}</h3>
+  const isDone = done.has(ex.id);
+  const isNext = ex.id === next;
+  return `<article class="ex ${isDone ? "is-done" : ""} ${isNext ? "is-next" : ""}" data-ex="${esc(ex.id)}">
+    <button class="ex-check" data-action="toggle-ex" data-id="${esc(ex.id)}" aria-pressed="${isDone}"
+      aria-label="${esc(ex.name)} : ${isDone ? "fait, toucher pour décocher" : "toucher pour cocher"}">
+      <span class="ring"><span class="n">${i + 1}</span>${ICON.check}</span></button>
+    <div><h3>${esc(ex.name)}${isNext ? ' <span class="badge next">EN COURS</span>' : ""}</h3>
       <p class="ex-reps"><strong>${esc(ex.reps)}</strong>${showMethod ? `<span aria-hidden="true">·</span><span>${esc(ex.method)}</span>` : ""}${ex.drop ? '<span class="badge">DROPSET</span>' : ""}</p>
       ${dropLine}
       ${actions.length ? `<div class="ex-actions">${actions.join("")}</div>` : ""}
@@ -936,7 +1226,10 @@ function settingsHTML(errorMsg) {
     </div>
     <p class="error" id="profile-error" role="alert" style="margin-top:-0.6rem"></p>
     <button class="btn filled wide press" data-action="save-profile">Enregistrer le profil</button>
-    <p class="t-eyebrow list-title" style="margin-top:1.4rem">Écran d'accueil</p>
+    <p class="t-eyebrow list-title" style="margin-top:1.4rem">Programme</p>
+    <div class="group-list"><button class="list-row danger row-press" data-action="program-reset">Revenir au programme d'origine</button></div>
+    <p class="note pad">Pour modifier une séance : onglet Séances, puis « Modifier » au-dessus des exercices.</p>
+    <p class="t-eyebrow list-title">Écran d'accueil</p>
     <div class="group-list"><ol class="steps"><li>Ouvre ce site dans Safari.</li><li>Touche Partager, puis « Sur l'écran d'accueil ».</li>
       <li>Ouvre ensuite toujours Salle depuis l'icône.</li></ol></div>`);
 }
@@ -983,7 +1276,7 @@ function backupJSON() {
     if (v.ok && v.value !== null) out[k] = v.value;
   }
   const profile = { firstName: S.config.firstName || "", goal: S.config.goal || null };
-  return JSON.stringify({ ...buildExport(out, S.start), profile }, null, 2);
+  return JSON.stringify({ ...buildExport(out, S.start), profile, program: S.program }, null, 2);
 }
 
 /** iPhone : feuille de partage → « Enregistrer dans Fichiers ». Ailleurs : téléchargement. */
@@ -1020,20 +1313,25 @@ async function handleImportFile(input) {
   input.value = "";
   if (!file) return;
   const err = (m) => { const el = $("#settings-error"); if (el) el.textContent = m; };
-  if (file.size > LIMITS.importBytes) return err("Fichier trop volumineux (200 000 octets maximum).");
+  if (file.size > LIMITS.importBytes) return err("Fichier trop volumineux (1 Mo maximum).");
   let text;
   try { text = await file.text(); } catch { return err("Impossible de lire ce fichier."); }
-  const r = validateImport(text, S.ctx);
+  let program = null;
+  try {
+    const p = JSON.parse(text).program;
+    if (p && Array.isArray(p.days) && checkProgram(p).length === 0) program = p;
+  } catch { /* vérifié juste après */ }
+  const r = validateImport(text, program ? buildContext(program, S.start) : S.ctx);
   if (!r.ok) return err(r.error);
   let profile = null;
   try {
     const p = JSON.parse(text).profile;
     if (p && typeof p.firstName === "string") profile = { firstName: p.firstName.slice(0, 40), goal: p.goal && Number.isFinite(p.goal.from) && Number.isFinite(p.goal.to) ? p.goal : null };
   } catch { /* déjà validé */ }
-  S.modal = { kind: "import", entries: r.entries, count: r.count, profile };
+  S.modal = { kind: "import", entries: r.entries, count: r.count, profile, program };
   setSheetContent(sheet("Restaurer cette sauvegarde ?", esc(file.name), `
     <div class="group-list"><div class="list-row result"><small>Valeurs à restaurer</small><b>${r.count}</b></div></div>
-    <p class="note pad">Les éléments du fichier remplacent leurs valeurs actuelles ; tout le reste est conservé. Rien ne change tant que tu n'as pas confirmé.</p>
+    <p class="note pad">Les éléments du fichier remplacent leurs valeurs actuelles ; tout le reste est conservé.${program ? " Ton programme sera aussi remplacé par celui du fichier." : ""} Rien ne change tant que tu n'as pas confirmé.</p>
     <div class="actions-2"><button class="btn press" data-action="import-cancel">Annuler</button>
     <button class="btn filled press" data-action="import-confirm">Restaurer</button></div>`));
 }
@@ -1180,6 +1478,15 @@ function onAction(el) {
       setDay(date, el.dataset.st); haptic(); closeModal(); toast(`Pointé : ${el.dataset.st}`); return;
     case "clear-day": setDay(date, null); closeModal(); toast("Pointage effacé"); return;
     case "finish": setDay(S.selected, "Fait"); haptic(); toast("Séance pointée : Fait"); return;
+    case "toggle-ex": return toggleExercise(id);
+    case "edit-start": S.editing = true; renderAll(); return;
+    case "edit-done": saveDayTitle(); S.editing = false; renderAll(); return;
+    case "ex-edit": return openExEditor(id);
+    case "ex-add": return openExEditor(null);
+    case "ex-save": return saveExEditor();
+    case "ex-delete": return deleteExercise();
+    case "ex-move": return moveExercise(id, Number(el.dataset.dir));
+    case "program-reset": return resetProgram();
     case "edit-rm": return openRm(id);
     case "save-rm": return saveRm(id);
     case "clear-rm": S.store.set(`rm:${id}`, null); closeModal(); toast("1RM effacé"); return;
@@ -1220,6 +1527,11 @@ function onAction(el) {
     case "import-cancel": return openSettings();
     case "import-confirm": {
       const m = S.modal;
+      if (m.program) {
+        saveProgramData(m.program);
+        S.program = m.program;
+        S.ctx = buildContext(m.program, S.start);
+      }
       S.store.setMany(m.entries);
       if (m.profile) {
         saveProfile(m.profile);
@@ -1260,12 +1572,21 @@ document.addEventListener("input", (e) => {
 
 document.addEventListener("change", (e) => {
   if (e.target.id === "cal-month") goToMonth(e.target.value);
+  else if (e.target.id === "day-title") saveDayTitle(true);
+  else if (e.target.id === "ef-bw") { const r = $("#ef-pct-row"); if (r) r.hidden = e.target.checked; }
+  else if (e.target.id === "ef-drop") { const r = $("#ef-drop-row"); if (r) r.hidden = !e.target.checked; }
   else if (e.target.id === "import-file") handleImportFile(e.target);
 });
 
 document.addEventListener("keydown", (e) => {
   const open = sheetCtl && sheetCtl.state === "open";
   if (e.key === "Escape" && open) { e.preventDefault(); closeModal(); return; }
+  if (e.key === "Enter" && e.target.id === "day-title") { e.preventDefault(); e.target.blur(); return; }
+  if (e.key === "Enter" && open && e.target.id && e.target.id.startsWith("ef-") && e.target.tagName === "INPUT" && e.target.type !== "checkbox") {
+    e.preventDefault();
+    saveExEditor();
+    return;
+  }
   if (e.key === "Enter" && open && e.target.id && e.target.id.startsWith("pf-")) {
     e.preventDefault();
     saveProfileFromForm();

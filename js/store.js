@@ -35,6 +35,25 @@ export function saveProfile(profile) {
   return write("profile", profile);
 }
 
+/** Programme modifié dans l'app (sinon celui de js/data.js). */
+export function loadProgram(fallback, check) {
+  const p = read("program", null);
+  if (p && Array.isArray(p.days) && check(p).length === 0) return p;
+  return fallback;
+}
+
+export function saveProgramData(program) {
+  return write("program", program);
+}
+
+export function clearProgram() {
+  try {
+    localStorage.removeItem(PREFIX + "program");
+  } catch {
+    /* ignoré */
+  }
+}
+
 /** Demande au système de ne pas effacer le stockage de l'app. */
 export async function askPersistence() {
   try {

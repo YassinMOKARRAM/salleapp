@@ -7,8 +7,8 @@ export const MODES = ["PDC", "Lesté", "Assisté"];
 export const LIMITS = {
   rmMax: 2000,
   bodyMax: 500,
-  importBytes: 200000,
-  importEntries: 500,
+  importBytes: 1000000,
+  importEntries: 3000,
 };
 export const PERIOD_DAYS = 365;
 export const WEEKDAYS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"];
@@ -366,6 +366,7 @@ export function buildContext(program, start) {
 
 const KEY_EX = /^(rm|body):([A-Za-z0-9_-]{1,40})$/;
 const KEY_DAY = /^day:(\d{4}-\d{2}-\d{2})$/;
+const KEY_DONE = /^ex:(\d{4}-\d{2}-\d{2})$/;
 
 function isFiniteNumber(v) {
   return typeof v === "number" && Number.isFinite(v);
@@ -381,6 +382,16 @@ export function validateEntry(key, value, ctx) {
     if (value === null) return { ok: true, value: null };
     if (!STATUSES.includes(value)) return { ok: false, error: "Statut inconnu." };
     return { ok: true, value };
+  }
+  m = KEY_DONE.exec(key);
+  if (m) {
+    // Exercices cochés pendant la séance de ce jour : liste d'identifiants.
+    if (!isValidISO(m[1])) return { ok: false, error: "Date impossible." };
+    if (m[1] < ctx.start || m[1] > ctx.end) return { ok: false, error: "Date hors de la période suivie." };
+    if (value === null) return { ok: true, value: null };
+    if (!Array.isArray(value) || value.length > 60) return { ok: false, error: "Liste d'exercices invalide." };
+    const ids = [...new Set(value.filter((id) => typeof id === "string" && ctx.exercises.has(id)))];
+    return { ok: true, value: ids.length ? ids : null };
   }
   m = KEY_EX.exec(key);
   if (!m) return { ok: false, error: "Clé inconnue." };
@@ -407,7 +418,7 @@ export function validateEntry(key, value, ctx) {
 export function validateImport(text, ctx) {
   if (typeof text !== "string") return { ok: false, error: "Fichier illisible." };
   if (new TextEncoder().encode(text).length > LIMITS.importBytes)
-    return { ok: false, error: "Fichier trop volumineux (200 000 octets maximum)." };
+    return { ok: false, error: "Fichier trop volumineux (1 Mo maximum)." };
   let obj;
   try {
     obj = JSON.parse(text);
