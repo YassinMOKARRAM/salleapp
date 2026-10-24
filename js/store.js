@@ -83,11 +83,11 @@ export function createLocalStore({ onChange, onError }) {
 
   return {
     get: (key) => (entries.has(key) ? entries.get(key).v : null),
-    set(key, value) {
+    set(key, value, { silent = false } = {}) {
       apply(key, value);
       meta.lastChange = Date.now();
       persist();
-      onChange();
+      if (!silent) onChange();
     },
     setMany(changes) {
       for (const [key, value] of Object.entries(changes)) apply(key, value);

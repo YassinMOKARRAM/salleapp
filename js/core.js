@@ -271,6 +271,53 @@ export function dropLoad(load, dropPercent) {
   return load * (1 - dropPercent);
 }
 
+/* ---------- Charges conseillées à partir du max ---------- */
+
+/** Répétitions gardées en réserve dans les conseils (séries dures mais propres). */
+export const RESERVE_REPS = 2;
+
+/** Max estimé sur 1 répétition (formule d'Epley) à partir d'une série réussie. */
+export function estimate1RM(weight, reps) {
+  if (typeof weight !== "number" || !Number.isFinite(weight) || weight <= 0) return null;
+  const r = Math.max(1, Math.round(reps || 1));
+  return r === 1 ? weight : weight * (1 + r / 30);
+}
+
+/** « 3 × 8–12 » → { lo: 8, hi: 12 } ; une durée (« 30 s », « 15 min ») → null. */
+export function repRange(reps) {
+  if (typeof reps !== "string") return null;
+  const s = reps.replace(/^\s*\d{1,2}\s*[×x]\s*/i, "").split("+")[0].trim();
+  const m = /^(\d{1,3})(?:\s*[–-]\s*(\d{1,3}))?(.*)$/.exec(s);
+  if (!m) return null;
+  const rest = m[3].trim().toLowerCase();
+  if (/^(s|sec|secondes?|min|minutes?|m|km|h)\b/.test(rest) || /^["']/.test(rest)) return null;
+  const a = Number(m[1]), b = m[2] ? Number(m[2]) : a;
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  if (lo < 1 || hi > 50) return null;
+  return { lo, hi };
+}
+
+/** Charge pour réussir `reps` répétitions en gardant RESERVE_REPS en réserve. */
+export function loadForReps(oneRM, reps, reserve = RESERVE_REPS) {
+  if (!oneRM) return null;
+  return oneRM / (1 + (reps + reserve) / 30);
+}
+
+export const roundHalf = (x) => Math.round(x * 2) / 2;
+
+/** Fourchette conseillée, arrondie à 0,5 kg : { heavy (peu de reps), light (beaucoup de reps) }. */
+export function suggestedLoads(oneRM, range) {
+  if (!oneRM || !range) return null;
+  return { heavy: roundHalf(loadForReps(oneRM, range.lo)), light: roundHalf(loadForReps(oneRM, range.hi)) };
+}
+
+export function formatRange(a, b) {
+  if (a == null) return "";
+  if (b == null || a === b) return `≈ ${formatKg(a)}`;
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  return `≈ ${formatKg(lo).replace(" kg", "")}–${formatKg(hi)}`;
+}
+
 export function formatPercent(p) {
   return `${String(roundDisplay(p * 100)).replace(".", ",")} %`;
 }
@@ -364,9 +411,11 @@ export function buildContext(program, start) {
   return { start, end: periodEnd(start), exercises: exerciseIndex(program) };
 }
 
-const KEY_EX = /^(rm|body):([A-Za-z0-9_-]{1,40})$/;
+const KEY_EX = /^(rm|body|max):([A-Za-z0-9_-]{1,40})$/;
 const KEY_DAY = /^day:(\d{4}-\d{2}-\d{2})$/;
 const KEY_DONE = /^ex:(\d{4}-\d{2}-\d{2})$/;
+const KEY_DATED = /^(log|bw|note):(\d{4}-\d{2}-\d{2})$/;
+export const NOTE_MAX = 500;
 
 function isFiniteNumber(v) {
   return typeof v === "number" && Number.isFinite(v);
@@ -383,6 +432,36 @@ export function validateEntry(key, value, ctx) {
     if (!STATUSES.includes(value)) return { ok: false, error: "Statut inconnu." };
     return { ok: true, value };
   }
+  m = KEY_DATED.exec(key);
+  if (m) {
+    const [, kind, iso] = m;
+    if (!isValidISO(iso)) return { ok: false, error: "Date impossible." };
+    if (iso < ctx.start || iso > ctx.end) return { ok: false, error: "Date hors de la période suivie." };
+    if (value === null) return { ok: true, value: null };
+    if (kind === "bw") {
+      // Pesée du jour (kg).
+      if (!isFiniteNumber(value) || value < 20 || value > 400) return { ok: false, error: "Poids de corps : entre 20 et 400 kg." };
+      return { ok: true, value: roundDisplay(value) };
+    }
+    if (kind === "note") {
+      if (typeof value !== "string") return { ok: false, error: "Note invalide." };
+      const t = value.trim().slice(0, NOTE_MAX);
+      return { ok: true, value: t || null };
+    }
+    // Charges notées ce jour : { idExercice: { w: kg | null, r: répétitions | null } }.
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "Charges invalides." };
+    const out = {};
+    for (const [id, set] of Object.entries(value)) {
+      if (!ctx.exercises.has(id) || !set || typeof set !== "object") continue;
+      const w = set.w === null || set.w === undefined ? null : set.w;
+      const r = set.r === null || set.r === undefined ? null : set.r;
+      if (w !== null && (!isFiniteNumber(w) || w < 0 || w > LIMITS.rmMax)) return { ok: false, error: "Charge invalide." };
+      if (r !== null && (!Number.isInteger(r) || r < 1 || r > 100)) return { ok: false, error: "Répétitions invalides." };
+      if (w === null && r === null) continue;
+      out[id] = { w: w === null ? null : roundDisplay(w), r };
+    }
+    return { ok: true, value: Object.keys(out).length ? out : null };
+  }
   m = KEY_DONE.exec(key);
   if (m) {
     // Exercices cochés pendant la séance de ce jour : liste d'identifiants.
@@ -397,6 +476,17 @@ export function validateEntry(key, value, ctx) {
   if (!m) return { ok: false, error: "Clé inconnue." };
   const ex = ctx.exercises.get(m[2]);
   if (!ex) return { ok: false, error: "Exercice inconnu." };
+  if (m[1] === "max") {
+    // Meilleure série réussie : poids + répétitions.
+    if (exerciseModes(ex).length) return { ok: false, error: "Cet exercice se règle au poids du corps." };
+    if (value === null) return { ok: true, value: null };
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "Max invalide." };
+    if (!isFiniteNumber(value.weight) || value.weight <= 0 || value.weight > LIMITS.rmMax)
+      return { ok: false, error: `Le poids doit être entre 0 et ${LIMITS.rmMax} kg.` };
+    if (!Number.isInteger(value.reps) || value.reps < 1 || value.reps > 30)
+      return { ok: false, error: "Répétitions : entre 1 et 30." };
+    return { ok: true, value: { weight: roundDisplay(value.weight), reps: value.reps } };
+  }
   if (m[1] === "rm") {
     if (!usesRM(ex)) return { ok: false, error: "Cet exercice n'utilise pas de 1RM." };
     if (value === null) return { ok: true, value: null };

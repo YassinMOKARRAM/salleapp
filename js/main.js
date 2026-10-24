@@ -4,6 +4,7 @@ import {
   formatClock, formatDateFr, formatKg, formatLongFr, formatPercent, groupRuns, inPeriod, modeText, monthGrid,
   monthLabelFr, monthsOfPeriod, parseDecimalInput, planFor, restSeconds, shortDate, todayInTZ, usesRM,
   validateEntry, validateImport, weekLabel, weekNumber, weekdayIndex, workingLoad, periodEnd, checkProgram,
+  repRange, roundHalf, NOTE_MAX,
 } from "./core.js";
 import { askPersistence, clearProgram, createLocalStore, loadProfile, loadProgram, saveProfile, saveProgramData } from "./store.js";
 import { CONFIG, PROGRAM } from "./data.js";
@@ -29,6 +30,8 @@ const ICON = {
   up: svg('<path d="M6 15l6-6 6 6"/>'),
   down: svg('<path d="M6 9l6 6 6-6"/>'),
   plus: svg('<path d="M12 5v14M5 12h14"/>'),
+  scale: svg('<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="M8.5 9.5a5 5 0 0 1 7 0L13 12"/>'),
+  chart: svg('<path d="M4 18l5-6 4 3 7-8"/>'),
 };
 const ST = {
   "Fait": { cls: "done", icon: ICON.check, short: "Fait" },
@@ -228,6 +231,12 @@ function bannersHTML() {
     out += `<section class="banner group"><p class="t-headline">Ajoute Salle à ton écran d'accueil</p>
       <p class="t-sub">Dans Safari : Partager, puis « Sur l'écran d'accueil ». Ensuite, ouvre toujours Salle depuis l'icône : c'est là que tes données sont gardées.</p></section>`;
   }
+  const lastBw = latestWeighIn();
+  if (lastBw && diffDaysSimple(lastBw.date, S.today) >= 7) {
+    out += `<section class="banner group"><p class="t-headline">Pense à te peser</p>
+      <p class="t-sub">Dernière pesée il y a ${diffDaysSimple(lastBw.date, S.today)} jours.</p>
+      <button class="btn small filled press" data-action="bw-add">Ajouter une pesée</button></section>`;
+  }
   const due = backupDue();
   if (due) {
     out += `<section class="banner group warn"><p class="t-headline">${esc(due)}</p>
@@ -304,12 +313,12 @@ function seancesHTML() {
     ${S.editing ? editListHTML(iso, plan)
       : plan.isRest
       ? `<section class="rest-day group"><h3 class="t-headline">Jour de repos</h3><p class="t-sub">Rien de prévu ce jour-là. Tu peux quand même le pointer.</p>
-          <button class="btn small press" style="margin-top:0.9rem" data-action="edit-start">${ICON.plus} Prévoir une séance ce jour-là</button></section>`
+          <button class="btn small press" style="margin-top:0.9rem" data-action="edit-start">${ICON.plus} Prévoir une séance ce jour-là</button></section>${noteHTML(iso)}`
       : `<div class="progress-head"><p class="t-eyebrow">Exercices</p>
            <span class="ph-right"><span class="t-sub num" id="progress-count">${nDone}/${n}</span>
            <button class="btn small plain press" data-action="edit-start">Modifier</button></span></div>
          <div class="progress" id="progress" role="progressbar" aria-label="Progression de la séance" aria-valuemin="0" aria-valuemax="${n}" aria-valuenow="${nDone}"><span></span></div>
-         <section class="exlist group" aria-label="Exercices">${plan.exercises.map((ex, i) => exerciseHTML(ex, i, done, nextId(plan, done))).join("")}</section>${finish}`}`;
+         <section class="exlist group" aria-label="Exercices">${plan.exercises.map((ex, i) => exerciseHTML(ex, i, done, nextId(plan, done))).join("")}</section>${finish}${noteHTML(iso)}`}`;
 }
 
 /* ----- éditeur du programme (s'applique au jour de la semaine) ----- */
@@ -528,6 +537,267 @@ function resetProgram() {
   toast("Programme d'origine rétabli");
 }
 
+/* ----- charges notées ----- */
+const numFr = (n) => String(n).replace(".", ",");
+const shortDay = (iso) =>
+  new Intl.DateTimeFormat("fr-FR", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(`${iso}T00:00:00Z`));
+const diffDaysSimple = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000);
+
+function fmtSet(set) {
+  if (!set) return "";
+  const w = set.w == null ? "" : set.w === 0 ? "PDC" : formatKg(set.w);
+  const r = set.r ? `${set.r} rép.` : "";
+  return w && r ? `${w} × ${set.r}` : w || r;
+}
+
+function logHistory(exId) {
+  const out = [];
+  for (const [k, e] of S.store.all()) {
+    if (!k.startsWith("log:") || !e.v || !e.v[exId]) continue;
+    out.push({ date: k.slice(4), ...e.v[exId] });
+  }
+  return out.sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
+function lastLog(exId, beforeIso) {
+  return logHistory(exId).find((x) => x.date < beforeIso) || null;
+}
+
+/** Conseil simple de progression : plus de répétitions, puis plus de poids. */
+function progressTip(last, range) {
+  if (!last || !range) return "";
+  if (last.r && last.r >= range.hi && last.w) {
+    return `Tu as atteint ${range.hi} rép. : essaie ${formatKg(roundHalf(last.w + 2.5))} pour ${range.lo} rép.`;
+  }
+  if (last.r && last.w != null) return `Pour progresser : vise ${Math.min(last.r + 1, range.hi)} rép. à ${last.w === 0 ? "PDC" : formatKg(last.w)}.`;
+  return "";
+}
+
+function openLog(id) {
+  const ex = S.ctx.exercises.get(id);
+  if (!ex) return;
+  const range = repRange(ex.reps);
+  const today = (S.store.get(`log:${S.selected}`) || {})[id] || null;
+  const last = lastLog(id, S.selected);
+  const hist = logHistory(id).filter((x) => x.date !== S.selected).slice(0, 5);
+  const bw = exerciseModes(ex).length > 0;
+  S.modal = { kind: "log", id };
+  const tip = progressTip(last, range);
+  openModal(sheet("Ma série", `${esc(ex.name)} · ${esc(ex.reps)}`, `
+    ${last ? `<div class="group-list">
+      <div class="list-row result"><small>Dernière fois · ${esc(shortDay(last.date))}</small><b>${esc(fmtSet(last))}</b></div>
+      ${tip ? `<div class="list-row tip">${ICON.chart}<span>${esc(tip)}</span></div>` : ""}</div>` : ""}
+    <label class="field-big"><span>${bw ? "Lest (0 = poids du corps)" : "Charge utilisée"}</span>
+      <span class="with-unit"><input id="lg-w" inputmode="decimal" autocomplete="off" enterkeyhint="next"
+        value="${today && today.w != null ? esc(numFr(today.w)) : ""}" placeholder="${last && last.w != null ? esc(numFr(last.w)) : "0"}"><span class="unit">kg</span></span></label>
+    <div class="group-list">
+      <label class="list-row"><span class="grow">Répétitions</span>
+        <input class="inline-input num" id="lg-r" inputmode="numeric" maxlength="3" enterkeyhint="done"
+          value="${today && today.r ? today.r : ""}" placeholder="${range ? range.hi : "—"}"></label>
+    </div>
+    <p class="error" id="lg-error" role="alert" style="margin-top:-0.6rem"></p>
+    ${hist.length ? `<p class="t-eyebrow list-title">Historique</p><div class="group-list">${hist.map((h) =>
+      `<div class="list-row result"><small>${esc(shortDay(h.date))}</small><b>${esc(fmtSet(h))}</b></div>`).join("")}</div>` : ""}
+    <div class="actions-2">
+      <button class="btn press" data-action="close-modal">Annuler</button>
+      <button class="btn filled press" data-action="log-save">Enregistrer</button>
+    </div>
+    ${today ? `<button class="btn plain danger wide press" style="margin-top:0.4rem" data-action="log-clear">Effacer</button>` : ""}`), "#lg-w");
+}
+
+function saveLog() {
+  const id = S.modal.id;
+  const err = (m) => { $("#lg-error").textContent = m; };
+  const w = parseDecimalInput($("#lg-w").value, { min: 0, minInclusive: true, max: LIMITS.rmMax });
+  if (!w.ok) return err(w.error);
+  const rRaw = $("#lg-r").value.trim();
+  if (rRaw && !/^\d{1,3}$/.test(rRaw)) return err("Répétitions : un nombre entier.");
+  const r = rRaw ? Number(rRaw) : null;
+  if (r !== null && (r < 1 || r > 100)) return err("Répétitions : entre 1 et 100.");
+  if (w.empty && r === null) return err("Indique la charge ou les répétitions.");
+  const iso = S.selected;
+  const log = { ...(S.store.get(`log:${iso}`) || {}) };
+  log[id] = { w: w.empty ? null : w.value, r };
+  // Noter sa série coche aussi l'exercice : on passe directement au suivant.
+  const plan = planFor(S.program, iso);
+  const done = doneSet(iso);
+  const newlyDone = !done.has(id);
+  done.add(id);
+  const ids = plan.exercises.map((e) => e.id).filter((x) => done.has(x));
+  S.justChecked = newlyDone ? id : null;
+  closeModal();
+  S.store.setMany({ [`log:${iso}`]: log, [`ex:${iso}`]: ids });
+  if (newlyDone) haptic();
+  toast(`Série notée : ${fmtSet(log[id])}`);
+}
+
+function clearLog() {
+  const iso = S.selected;
+  const log = { ...(S.store.get(`log:${iso}`) || {}) };
+  delete log[S.modal.id];
+  closeModal();
+  S.store.set(`log:${iso}`, Object.keys(log).length ? log : null);
+  toast("Charge effacée");
+}
+
+/* ----- note de séance ----- */
+function noteHTML(iso) {
+  const note = S.store.get(`note:${iso}`) || "";
+  return `<p class="t-eyebrow section-title" style="margin-top:1.4rem">Note de séance</p>
+    <div class="group-list note-box"><textarea id="session-note" data-date="${iso}" rows="3" maxlength="${NOTE_MAX}"
+      placeholder="Ressenti, douleur, à changer la prochaine fois…" aria-label="Note de séance">${esc(note)}</textarea></div>`;
+}
+
+function saveNote(iso, value) {
+  const v = validateEntry(`note:${iso}`, value, S.ctx);
+  if (!v.ok) return;
+  if ((S.store.get(`note:${iso}`) || null) === v.value) return;
+  S.store.set(`note:${iso}`, v.value, { silent: true }); // pas de réaffichage pendant la frappe
+}
+
+function dayExtrasHTML(iso) {
+  const note = S.store.get(`note:${iso}`);
+  const bw = S.store.get(`bw:${iso}`);
+  const log = S.store.get(`log:${iso}`);
+  const rows = [];
+  if (log) {
+    for (const [id, set] of Object.entries(log)) {
+      const ex = S.ctx.exercises.get(id);
+      if (ex) rows.push(`<div class="list-row result"><small>${esc(ex.name)}</small><b>${esc(fmtSet(set))}</b></div>`);
+    }
+  }
+  if (bw != null) rows.push(`<div class="list-row result"><small>Pesée</small><b>${esc(formatKg(bw))}</b></div>`);
+  return `${rows.length ? `<p class="t-eyebrow list-title">Ce jour-là</p><div class="group-list">${rows.join("")}</div>` : ""}
+    ${note ? `<p class="t-eyebrow list-title">Note</p><div class="group-list"><p class="note-read">${esc(note)}</p></div>` : ""}`;
+}
+
+/* ----- poids de corps ----- */
+function weighIns() {
+  const out = [];
+  for (const [k, e] of S.store.all()) if (k.startsWith("bw:") && typeof e.v === "number") out.push({ date: k.slice(3), w: e.v });
+  return out.sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+function latestWeighIn() {
+  const all = weighIns();
+  return all.length ? all[all.length - 1] : null;
+}
+
+const fmtSigned = (n) => `${n > 0 ? "+" : n < 0 ? "−" : ""}${formatKg(Math.abs(Math.round(n * 10) / 10))}`;
+
+function bodyWeightHTML() {
+  const list = weighIns();
+  const g = S.config.goal;
+  const last = list[list.length - 1];
+  const first = list[0];
+  let summary = `<p class="t-sub">Aucune pesée pour l'instant. Une par semaine suffit, le matin à jeun.</p>`;
+  if (last) {
+    const start = g ? g.from : first.w;
+    const gained = last.w - start;
+    const toGo = g ? g.to - last.w : null;
+    const pct = g && g.to !== g.from ? clamp((last.w - g.from) / (g.to - g.from)) : null;
+    summary = `<div class="bw-top">
+        <div><p class="bw-value num">${esc(formatKg(last.w))}</p><p class="t-sub">Pesée du ${esc(shortDay(last.date))}</p></div>
+        <div class="bw-delta"><b class="num">${esc(fmtSigned(gained))}</b><span class="t-sub">${g ? "depuis le départ" : "depuis la 1re pesée"}</span></div>
+      </div>
+      ${g ? `<div class="bw-goal"><div class="progress goal"><span style="transform:scaleX(${pct})"></span></div>
+        <p class="t-sub">${toGo > 0 ? `Encore ${esc(formatKg(Math.round(toGo * 10) / 10))} pour atteindre ${esc(formatKg(g.to))}` : `Objectif de ${esc(formatKg(g.to))} atteint 🎉`}</p></div>` : ""}
+      ${list.length >= 2 ? weightChartSVG(list, g) : ""}`;
+  }
+  const rows = list.slice(-5).reverse().map((x) => `<button class="list-row row-press result" data-action="bw-edit" data-date="${x.date}">
+      <small>${esc(shortDay(x.date))}</small><b class="num">${esc(formatKg(x.w))}</b></button>`).join("");
+  return `<section class="bw-section" aria-label="Poids de corps">
+    <div class="stats-head"><h2 class="t-title2">Poids de corps</h2>
+      <button class="btn small press" data-action="bw-add">${ICON.plus} Pesée</button></div>
+    <div class="group bw-card">${summary}</div>
+    ${rows ? `<p class="t-eyebrow list-title" style="margin-top:1rem">Dernières pesées</p><div class="group-list">${rows}</div>` : ""}
+  </section>`;
+}
+
+/** Courbe simple (une seule série : pas de légende, le titre la nomme). */
+function weightChartSVG(list, goal) {
+  const W = 320, H = 140, padL = 34, padR = 12, padT = 12, padB = 22;
+  const t0 = Date.parse(`${list[0].date}T00:00:00Z`), t1 = Date.parse(`${list[list.length - 1].date}T00:00:00Z`);
+  const vals = list.map((x) => x.w).concat(goal ? [goal.to] : []);
+  let lo = Math.floor(Math.min(...vals) - 1), hi = Math.ceil(Math.max(...vals) + 1);
+  if (hi - lo < 4) { const mid = (hi + lo) / 2; lo = Math.floor(mid - 2); hi = Math.ceil(mid + 2); }
+  const x = (d) => padL + (t1 === t0 ? (W - padL - padR) : ((Date.parse(`${d}T00:00:00Z`) - t0) / (t1 - t0)) * (W - padL - padR));
+  const y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+  const pts = list.map((p) => [x(p.date), y(p.w)]);
+  const path = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("");
+  const area = `${path}L${pts[pts.length - 1][0].toFixed(1)},${H - padB}L${pts[0][0].toFixed(1)},${H - padB}Z`;
+  const ticks = [lo, Math.round((lo + hi) / 2), hi];
+  const lastP = pts[pts.length - 1];
+  const data = esc(JSON.stringify(list.map((p, i) => ({ x: pts[i][0], y: pts[i][1], t: `${shortDay(p.date)} · ${formatKg(p.w)}` }))));
+  return `<figure class="bw-chart" data-points="${data}">
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Courbe du poids de corps, de ${esc(formatKg(list[0].w))} à ${esc(formatKg(list[list.length - 1].w))}">
+      ${ticks.map((t) => `<line class="grid" x1="${padL}" x2="${W - padR}" y1="${y(t)}" y2="${y(t)}"/><text class="tick" x="${padL - 6}" y="${y(t) + 3.5}" text-anchor="end">${t}</text>`).join("")}
+      ${goal ? `<line class="goal-line" x1="${padL}" x2="${W - padR}" y1="${y(goal.to)}" y2="${y(goal.to)}"/><text class="tick goal-txt" x="${W - padR}" y="${y(goal.to) - 5}" text-anchor="end">Objectif ${numFr(goal.to)}</text>` : ""}
+      <path class="area" d="${area}"/>
+      <path class="line" d="${path}"/>
+      <circle class="end" cx="${lastP[0]}" cy="${lastP[1]}" r="4.5"/>
+      <g class="cross" visibility="hidden"><line class="cross-l" y1="${padT}" y2="${H - padB}"/><circle class="cross-d" r="4.5"/></g>
+    </svg>
+    <figcaption class="chart-tip t-foot" aria-live="polite"></figcaption>
+  </figure>`;
+}
+
+// Toucher/survoler la courbe : point le plus proche + valeur.
+function chartPointer(e) {
+  const fig = e.target.closest && e.target.closest(".bw-chart");
+  if (!fig) return;
+  const svgEl = fig.querySelector("svg");
+  const pts = JSON.parse(fig.dataset.points);
+  const r = svgEl.getBoundingClientRect();
+  const vx = ((e.clientX - r.left) / r.width) * 320;
+  let best = pts[0];
+  for (const p of pts) if (Math.abs(p.x - vx) < Math.abs(best.x - vx)) best = p;
+  const g = svgEl.querySelector(".cross");
+  g.setAttribute("visibility", "visible");
+  g.querySelector(".cross-l").setAttribute("x1", best.x);
+  g.querySelector(".cross-l").setAttribute("x2", best.x);
+  g.querySelector(".cross-d").setAttribute("cx", best.x);
+  g.querySelector(".cross-d").setAttribute("cy", best.y);
+  fig.querySelector(".chart-tip").textContent = best.t;
+}
+document.addEventListener("pointermove", chartPointer);
+document.addEventListener("pointerdown", chartPointer);
+
+function openWeighIn(iso) {
+  if (!inPeriod(iso, S.start)) iso = clampToPeriod(iso, S.start);
+  const cur = S.store.get(`bw:${iso}`);
+  const last = latestWeighIn();
+  S.modal = { kind: "bw", iso, armed: false };
+  openModal(sheet("Pesée", esc(capitalize(formatLongFr(iso))), `
+    <label class="field-big"><span>Poids de corps</span>
+      <span class="with-unit"><input id="bw-input" inputmode="decimal" autocomplete="off" enterkeyhint="done"
+        value="${cur != null ? esc(numFr(cur)) : ""}" placeholder="${last ? esc(numFr(last.w)) : "0"}"><span class="unit">kg</span></span></label>
+    <p class="error" id="bw-error" role="alert"></p>
+    <p class="note pad" style="margin-top:0">Idéalement le matin, à jeun, une fois par semaine.</p>
+    <div class="actions-2">
+      <button class="btn press" data-action="close-modal">Annuler</button>
+      <button class="btn filled press" data-action="bw-save">Enregistrer</button>
+    </div>
+    ${cur != null ? `<button class="btn plain danger wide press" style="margin-top:0.4rem" data-action="bw-delete">Supprimer la pesée</button>` : ""}`), "#bw-input");
+}
+
+function saveWeighIn() {
+  const p = parseDecimalInput($("#bw-input").value, { min: 20, minInclusive: true, max: 400 });
+  if (!p.ok || p.empty) { $("#bw-error").textContent = "Indique un poids entre 20 et 400 kg."; return; }
+  const iso = S.modal.iso;
+  closeModal();
+  S.store.set(`bw:${iso}`, p.value);
+  toast(`Pesée enregistrée : ${formatKg(p.value)}`);
+}
+
+function deleteWeighIn() {
+  const btn = $("[data-action=bw-delete]");
+  if (!S.modal.armed) { S.modal.armed = true; btn.textContent = "Confirmer la suppression"; btn.classList.add("armed"); return; }
+  const iso = S.modal.iso;
+  closeModal();
+  S.store.set(`bw:${iso}`, null);
+  toast("Pesée supprimée");
+}
+
 /* ----- exercices cochés pendant la séance ----- */
 const doneSet = (iso) => new Set(S.store.get(`ex:${iso}`) || []);
 const nextId = (plan, done) => (plan.exercises.find((e) => !done.has(e.id)) || {}).id;
@@ -607,7 +877,17 @@ function exerciseHTML(ex, i, done = new Set(), next = null) {
   const restBtn = rs
     ? `<button class="pill rest-btn press" data-action="timer" data-id="${esc(ex.id)}" aria-label="Lancer le minuteur de repos : ${esc(ex.rest)}">${ICON.timer}<b>${esc(ex.rest)}</b></button>`
     : "";
-  const actions = [restBtn, loadBtn].filter(Boolean);
+  const range = repRange(ex.reps);
+  let logBtn = "";
+  if (range) {
+    const today = (S.store.get(`log:${S.selected}`) || {})[ex.id];
+    const last = lastLog(ex.id, S.selected);
+    logBtn = `<button class="pill log-btn press" data-action="edit-log" data-id="${esc(ex.id)}">${
+      today ? `<small>Noté</small><b>${esc(fmtSet(today))}</b>`
+      : last ? `<small>Dernière fois</small><b>${esc(fmtSet(last))}</b>`
+      : `<small>Charge</small><b>Noter</b>`}</button>`;
+  }
+  const actions = [logBtn, restBtn, loadBtn].filter(Boolean);
   const showMethod = ex.method && !(usesRM(ex) && /%/.test(ex.method));
   const isDone = done.has(ex.id);
   const isNext = ex.id === next;
@@ -770,7 +1050,8 @@ function calendrierHTML() {
       <span><i class="sw done"></i>Fait</span><span><i class="sw missed"></i>Non fait</span>
       <span><i class="sw rest"></i>Repos / annulé</span><span><i class="sw empty"></i>Non renseigné</span>
     </div>
-    ${statsCardHTML()}`;
+    ${statsCardHTML()}
+    ${bodyWeightHTML()}`;
 }
 
 function cellLabel(iso, st) {
@@ -1076,7 +1357,8 @@ function dayHTML(iso) {
   return sheet(esc(capitalize(formatLongFr(iso))), `Séance prévue : ${esc(plan.title)}`, `
     ${iso > S.today ? '<p class="note warn">Date à venir : elle ne sera comptée qu\'à partir de ce jour.</p>' : ""}
     <div class="group-list">${rows}</div>
-    <div class="group-list"><button class="list-row danger row-press" data-action="clear-day" data-date="${iso}" ${st ? "" : "disabled"}>Effacer le pointage</button></div>`);
+    <div class="group-list"><button class="list-row danger row-press" data-action="clear-day" data-date="${iso}" ${st ? "" : "disabled"}>Effacer le pointage</button></div>
+    ${dayExtrasHTML(iso)}`);
 }
 
 function openDay(iso) {
@@ -1479,6 +1761,13 @@ function onAction(el) {
     case "clear-day": setDay(date, null); closeModal(); toast("Pointage effacé"); return;
     case "finish": setDay(S.selected, "Fait"); haptic(); toast("Séance pointée : Fait"); return;
     case "toggle-ex": return toggleExercise(id);
+    case "edit-log": return openLog(id);
+    case "log-save": return saveLog();
+    case "log-clear": return clearLog();
+    case "bw-add": return openWeighIn(S.today);
+    case "bw-edit": return openWeighIn(el.dataset.date);
+    case "bw-save": return saveWeighIn();
+    case "bw-delete": return deleteWeighIn();
     case "edit-start": S.editing = true; renderAll(); return;
     case "edit-done": saveDayTitle(); S.editing = false; renderAll(); return;
     case "ex-edit": return openExEditor(id);
@@ -1557,7 +1846,15 @@ document.addEventListener("click", (e) => {
   onAction(el);
 });
 
+let noteTimer = null;
 document.addEventListener("input", (e) => {
+  if (e.target.id === "session-note") {
+    const iso = e.target.dataset.date;
+    const value = e.target.value;
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => saveNote(iso, value), 500);
+    return;
+  }
   if (e.target.id === "rm-input" && S.modal && S.modal.kind === "rm") {
     const ex = S.ctx.exercises.get(S.modal.id);
     const p = rmParse(e.target.value);
@@ -1571,6 +1868,7 @@ document.addEventListener("input", (e) => {
 });
 
 document.addEventListener("change", (e) => {
+  if (e.target.id === "session-note") { clearTimeout(noteTimer); saveNote(e.target.dataset.date, e.target.value); return; }
   if (e.target.id === "cal-month") goToMonth(e.target.value);
   else if (e.target.id === "day-title") saveDayTitle(true);
   else if (e.target.id === "ef-bw") { const r = $("#ef-pct-row"); if (r) r.hidden = e.target.checked; }
@@ -1592,6 +1890,8 @@ document.addEventListener("keydown", (e) => {
     saveProfileFromForm();
     return;
   }
+  if (e.key === "Enter" && open && ["lg-w", "lg-r"].includes(e.target.id)) { e.preventDefault(); saveLog(); return; }
+  if (e.key === "Enter" && open && e.target.id === "bw-input") { e.preventDefault(); saveWeighIn(); return; }
   if (e.key === "Enter" && open && (e.target.id === "rm-input" || e.target.id === "body-input")) {
     e.preventDefault();
     onAction($(S.modal.kind === "rm" ? "[data-action=save-rm]" : "[data-action=save-body]"));

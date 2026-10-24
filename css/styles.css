@@ -286,7 +286,7 @@ main { min-width: 0; padding-bottom: calc(var(--tab-h) + env(safe-area-inset-bot
 @keyframes ring-pop { 0% { transform: scale(0.72); } 55% { transform: scale(1.12); } 100% { transform: scale(1); } }
 .ex.is-done h3 { color: var(--label-2); text-decoration: line-through; text-decoration-color: var(--label-3); }
 .ex.is-done .ex-reps strong { color: var(--label-2); }
-.ex.is-done .ex-actions, .ex.is-done .ex-drop { display: none; }
+.ex.is-done .ex-actions > :not(.log-btn), .ex.is-done .ex-drop { display: none; }
 .badge.next { color: var(--tint); background: color-mix(in srgb, var(--tint) 14%, transparent); vertical-align: 0.12em; margin-left: 0.2rem; }
 
 /* Progression de la séance */
@@ -295,6 +295,44 @@ main { min-width: 0; padding-bottom: calc(var(--tab-h) + env(safe-area-inset-bot
 .progress { height: 4px; border-radius: 2px; background: var(--fill); margin: 0 1rem 0.65rem; overflow: hidden; }
 .progress span { display: block; height: 100%; border-radius: 2px; background: var(--green); transform-origin: left center; transform: scaleX(0); will-change: transform; }
 .btn.ready { background: var(--green); color: #fff; }
+
+/* Charges notées */
+.pill.log-btn { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.pill.log-btn b { color: var(--label); }
+.logged { display: inline-flex; align-items: center; gap: 0.2rem; color: var(--green); font-weight: 600; font-family: var(--font-rounded); font-variant-numeric: tabular-nums; }
+.logged svg { width: 0.85rem; height: 0.85rem; stroke-width: 2.8; }
+.list-row.tip { gap: 0.6rem; align-items: flex-start; color: var(--label); font-size: 0.92rem; }
+.list-row.tip svg { width: 1.1rem; height: 1.1rem; color: var(--green); margin-top: 0.1rem; stroke-width: 2.4; }
+
+/* Note de séance */
+.note-box textarea {
+  display: block; width: 100%; min-height: 5.5rem; border: 0; outline: none; resize: none; background: transparent;
+  padding: 0.75rem 1rem; font: inherit; font-size: 1rem; line-height: 1.4; color: var(--label);
+}
+.note-box textarea::placeholder { color: var(--label-3); }
+.note-read { padding: 0.75rem 1rem; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.95rem; }
+
+/* Poids de corps */
+.bw-section { margin-top: 1.6rem; }
+.bw-card { padding: 1rem; }
+.bw-top { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; }
+.bw-value { font-size: 2.2rem; font-weight: 700; letter-spacing: -0.025em; line-height: 1.05; }
+.bw-delta { text-align: right; }
+.bw-delta b { display: block; font-size: 1.2rem; font-weight: 700; color: var(--green); }
+.bw-goal { margin-top: 0.9rem; }
+.progress.goal { margin: 0 0 0.4rem; height: 6px; border-radius: 3px; }
+.progress.goal span { background: var(--tint); }
+.bw-chart { margin: 0.9rem 0 0; touch-action: pan-y; }
+.bw-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.bw-chart .grid { stroke: var(--sep); stroke-width: 1; }
+.bw-chart .tick { fill: var(--label-2); font-size: 10px; font-family: var(--font); }
+.bw-chart .goal-line { stroke: var(--label-3); stroke-width: 1.5; stroke-dasharray: 4 4; }
+.bw-chart .goal-txt { fill: var(--label-2); font-weight: 600; }
+.bw-chart .line { fill: none; stroke: var(--tint); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.bw-chart .area { fill: var(--tint); opacity: 0.1; }
+.bw-chart .end, .bw-chart .cross-d { fill: var(--tint); stroke: var(--bg-2); stroke-width: 2; }
+.bw-chart .cross-l { stroke: var(--label-3); stroke-width: 1; }
+.chart-tip { min-height: 1.2em; margin-top: 0.3rem; text-align: center; }
 .ph-right { display: inline-flex; align-items: center; gap: 0.35rem; }
 .ph-right .btn.small, .progress-head .btn.small { min-height: 2rem; padding: 0 0.4rem 0 0.6rem; margin-right: -0.4rem; }
 .btn.strong { font-weight: 700; }
