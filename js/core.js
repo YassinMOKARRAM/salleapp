@@ -414,7 +414,13 @@ export function buildContext(program, start) {
 const KEY_EX = /^(rm|body|max):([A-Za-z0-9_-]{1,40})$/;
 const KEY_DAY = /^day:(\d{4}-\d{2}-\d{2})$/;
 const KEY_DONE = /^ex:(\d{4}-\d{2}-\d{2})$/;
-const KEY_DATED = /^(log|bw|note):(\d{4}-\d{2}-\d{2})$/;
+const KEY_DATED = /^(log|bw|note|sets):(\d{4}-\d{2}-\d{2})$/;
+
+/** Nombre de séries prévu : « 3 × 8–12 » → 3 ; sans « N × » → 1. */
+export function seriesCount(ex) {
+  const m = /^\s*(\d{1,2})\s*[×x]/i.exec((ex && ex.reps) || "");
+  return m ? Math.max(1, Math.min(20, Number(m[1]))) : 1;
+}
 export const NOTE_MAX = 500;
 
 function isFiniteNumber(v) {
@@ -442,6 +448,17 @@ export function validateEntry(key, value, ctx) {
       // Pesée du jour (kg).
       if (!isFiniteNumber(value) || value < 20 || value > 400) return { ok: false, error: "Poids de corps : entre 20 et 400 kg." };
       return { ok: true, value: roundDisplay(value) };
+    }
+    if (kind === "sets") {
+      // Séries cochées ce jour : { idExercice: nombre }.
+      if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "Séries invalides." };
+      const out = {};
+      for (const [id, n] of Object.entries(value)) {
+        if (!ctx.exercises.has(id)) continue;
+        if (!Number.isInteger(n) || n < 0 || n > 20) return { ok: false, error: "Nombre de séries invalide." };
+        if (n > 0) out[id] = n;
+      }
+      return { ok: true, value: Object.keys(out).length ? out : null };
     }
     if (kind === "note") {
       if (typeof value !== "string") return { ok: false, error: "Note invalide." };

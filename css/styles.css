@@ -262,7 +262,23 @@ main { min-width: 0; padding-bottom: calc(var(--tab-h) + env(safe-area-inset-bot
 /* ---------- Liste groupée des exercices ---------- */
 .section-title { padding: 0 1rem 0.4rem; }
 .exlist { overflow: hidden; margin-bottom: 1.25rem; }
-.ex { position: relative; display: grid; grid-template-columns: 2rem 1fr; gap: 0 0.75rem; padding: 0.85rem 1rem 0.9rem; transition: background-color 250ms ease; }
+.ex { position: relative; display: grid; grid-template-columns: 2rem 1fr; gap: 0 0.75rem; padding: 0.85rem 1rem 0.9rem; transition: background-color 250ms ease; isolation: isolate; }
+
+/* Toute la case sert de jauge : un appui = une série. */
+.ex-fill {
+  position: absolute; inset: 0; z-index: -1; pointer-events: none; transform-origin: left center;
+  background: color-mix(in srgb, var(--green) 17%, transparent);
+}
+.ex-fill.animate { transition: transform 450ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.ex-hit {
+  position: absolute; inset: 0; z-index: 0; width: 100%; border-radius: 0;
+  transition: background-color 250ms ease; -webkit-touch-callout: none;
+}
+.ex-hit:active { background-color: var(--fill); transition: none; }
+.ex > .ex-check, .ex > .ex-body { position: relative; z-index: 1; pointer-events: none; }
+.ex > .ex-check, .ex .ex-body button { pointer-events: auto; }
+.badge.sets { color: var(--green); background: color-mix(in srgb, var(--green) 16%, transparent); vertical-align: 0.12em; margin-left: 0.2rem; font-family: var(--font-rounded); }
+.sets-hint { padding: 0 1rem 0.55rem; margin-top: -0.25rem; }
 .ex + .ex::before { content: ""; position: absolute; top: 0; right: 0; left: 3.75rem; height: 0.5px; background: var(--sep); }
 
 /* Case à cocher façon Rappels : grand rond, zone de toucher de 44 px. */
@@ -656,6 +672,7 @@ main { min-width: 0; padding-bottom: calc(var(--tab-h) + env(safe-area-inset-bot
 @media (prefers-reduced-motion: reduce) {
   .press:active:not(:disabled) { transform: none; }
   .ring.pop { animation: none; }
+  .ex-fill.animate { transition: none; }
   .switch, .switch::after { transition: none; }
   .ex-check:active .ring { transform: none; }
   #toast { transform: translate(-50%, 0); filter: none; transition: opacity 200ms ease; }

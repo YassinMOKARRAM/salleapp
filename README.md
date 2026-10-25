@@ -25,6 +25,12 @@ Tu peux changer le nom de la séance, ajouter, modifier, supprimer ou réordonne
 Les changements s'appliquent au jour de la semaine choisi et sont inclus dans la sauvegarde Fichiers.
 « Revenir au programme d'origine » (Réglages) remet le contenu de `js/data.js`.
 
+## Pendant la séance
+
+- Touche la case d'un exercice à chaque série faite : elle se remplit (1/3, 2/3, 3/3) puis se coche.
+- Appui long sur la case : retire une série.
+- Le repos se lance tout seul après chaque série (désactivable dans Réglages → Séance).
+
 ## Suivre sa progression
 
 - Charges : sur chaque exercice, « Noter » enregistre la charge et les répétitions (et coche l'exercice).

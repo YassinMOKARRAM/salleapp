@@ -81,73 +81,6 @@ export const PROGRAM = {
     {
       "day": 2,
       "weekday": "Mardi",
-      "title": "Épaules + rappel pecs/bras",
-      "exercises": [
-        {
-          "id": "mar-1",
-          "name": "Développé épaules machine",
-          "reps": "3 × 8–12",
-          "rest": "90–120 s",
-          "method": "Au feeling",
-          "percent": null,
-          "rmKey": null,
-          "drop": false,
-          "dropPercent": null,
-          "bodyweight": false
-        },
-        {
-          "id": "mar-2",
-          "name": "Élévations latérales",
-          "reps": "3 × 12–15",
-          "rest": "90–120 s",
-          "method": "Au feeling",
-          "percent": null,
-          "rmKey": null,
-          "drop": false,
-          "dropPercent": null,
-          "bodyweight": false
-        },
-        {
-          "id": "mar-3",
-          "name": "Oiseau machine",
-          "reps": "3 × 12–15",
-          "rest": "90–120 s",
-          "method": "Au feeling",
-          "percent": null,
-          "rmKey": null,
-          "drop": false,
-          "dropPercent": null,
-          "bodyweight": false
-        },
-        {
-          "id": "mar-4",
-          "name": "Pec deck",
-          "reps": "2 × 12",
-          "rest": "90–120 s",
-          "method": "Au feeling",
-          "percent": null,
-          "rmKey": null,
-          "drop": false,
-          "dropPercent": null,
-          "bodyweight": false
-        },
-        {
-          "id": "mar-5",
-          "name": "Extension triceps poulie",
-          "reps": "2 × 12",
-          "rest": "90–120 s",
-          "method": "Au feeling",
-          "percent": null,
-          "rmKey": null,
-          "drop": false,
-          "dropPercent": null,
-          "bodyweight": false
-        }
-      ]
-    },
-    {
-      "day": 3,
-      "weekday": "Mercredi",
       "title": "Jambes",
       "exercises": [
         {
@@ -202,6 +135,73 @@ export const PROGRAM = {
           "id": "mer-5",
           "name": "Mollets",
           "reps": "3 × 12–15",
+          "rest": "90–120 s",
+          "method": "Au feeling",
+          "percent": null,
+          "rmKey": null,
+          "drop": false,
+          "dropPercent": null,
+          "bodyweight": false
+        }
+      ]
+    },
+    {
+      "day": 3,
+      "weekday": "Mercredi",
+      "title": "Épaules + rappel pecs/bras",
+      "exercises": [
+        {
+          "id": "mar-1",
+          "name": "Développé épaules machine",
+          "reps": "3 × 8–12",
+          "rest": "90–120 s",
+          "method": "Au feeling",
+          "percent": null,
+          "rmKey": null,
+          "drop": false,
+          "dropPercent": null,
+          "bodyweight": false
+        },
+        {
+          "id": "mar-2",
+          "name": "Élévations latérales",
+          "reps": "3 × 12–15",
+          "rest": "90–120 s",
+          "method": "Au feeling",
+          "percent": null,
+          "rmKey": null,
+          "drop": false,
+          "dropPercent": null,
+          "bodyweight": false
+        },
+        {
+          "id": "mar-3",
+          "name": "Oiseau machine",
+          "reps": "3 × 12–15",
+          "rest": "90–120 s",
+          "method": "Au feeling",
+          "percent": null,
+          "rmKey": null,
+          "drop": false,
+          "dropPercent": null,
+          "bodyweight": false
+        },
+        {
+          "id": "mar-4",
+          "name": "Pec deck",
+          "reps": "2 × 12",
+          "rest": "90–120 s",
+          "method": "Au feeling",
+          "percent": null,
+          "rmKey": null,
+          "drop": false,
+          "dropPercent": null,
+          "bodyweight": false
+        },
+        {
+          "id": "mar-5",
+          "name": "Extension triceps poulie",
+          "reps": "2 × 12",
           "rest": "90–120 s",
           "method": "Au feeling",
           "percent": null,

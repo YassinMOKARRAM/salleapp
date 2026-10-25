@@ -35,6 +35,25 @@ export function saveProfile(profile) {
   return write("profile", profile);
 }
 
+/** Exécute une seule fois une mise à jour des données enregistrées. */
+export function runOnce(name, fn) {
+  const done = read("migrations", {});
+  if (done[name]) return;
+  fn();
+  done[name] = Date.now();
+  write("migrations", done);
+}
+
+/** Préférences de l'app (repos automatique…). */
+export function loadPrefs() {
+  const p = read("prefs", {});
+  return { autoTimer: p.autoTimer !== false };
+}
+
+export function savePrefs(prefs) {
+  return write("prefs", prefs);
+}
+
 /** Programme modifié dans l'app (sinon celui de js/data.js). */
 export function loadProgram(fallback, check) {
   const p = read("program", null);

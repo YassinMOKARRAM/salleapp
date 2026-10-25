@@ -4,9 +4,9 @@ import {
   formatClock, formatDateFr, formatKg, formatLongFr, formatPercent, groupRuns, inPeriod, modeText, monthGrid,
   monthLabelFr, monthsOfPeriod, parseDecimalInput, planFor, restSeconds, shortDate, todayInTZ, usesRM,
   validateEntry, validateImport, weekLabel, weekNumber, weekdayIndex, workingLoad, periodEnd, checkProgram,
-  repRange, roundHalf, NOTE_MAX,
+  repRange, roundHalf, NOTE_MAX, seriesCount,
 } from "./core.js";
-import { askPersistence, clearProgram, createLocalStore, loadProfile, loadProgram, saveProfile, saveProgramData } from "./store.js";
+import { askPersistence, clearProgram, createLocalStore, loadPrefs, loadProfile, loadProgram, runOnce, saveProfile, savePrefs, saveProgramData } from "./store.js";
 import { CONFIG, PROGRAM } from "./data.js";
 import { HYSTERESIS, Spring, VelocityTracker, clamp, haptic, project, reducedMotion, rubberband } from "./motion.js";
 
@@ -85,6 +85,16 @@ function boot() {
       <p class="t-sub">Le programme (js/data.js) contient une erreur :<br>${errors.map(esc).join("<br>")}</p></div></div>`;
     return;
   }
+  // 25/10/2026 : séances du mardi et du mercredi inversées, aussi dans un programme déjà modifié dans l'app.
+  runOnce("swap-mardi-mercredi", () => {
+    const stored = loadProgram(null, checkProgram);
+    if (!stored) return;
+    const tue = stored.days.find((d) => d.day === 2), wed = stored.days.find((d) => d.day === 3);
+    if (!tue || !wed) return;
+    [tue.title, wed.title] = [wed.title, tue.title];
+    [tue.exercises, wed.exercises] = [wed.exercises, tue.exercises];
+    saveProgramData(stored);
+  });
   const profile = loadProfile();
   startApp({
     config: { ...CONFIG, end: periodEnd(CONFIG.start), firstName: profile.firstName, goal: profile.goal },
@@ -99,7 +109,7 @@ function boot() {
 function startApp(data) {
   Object.assign(S, {
     config: data.config, program: data.program, start: data.config.start, end: data.config.end,
-    tz: data.config.timezone || "Europe/Paris", userEmail: "", tab: "seances", calMode: "frise",
+    tz: data.config.timezone || "Europe/Paris", userEmail: "", tab: "seances", calMode: "frise", prefs: loadPrefs(), fillFrom: {},
     scope: "all", friseLeft: null, modal: null, timer: null, weekCommit: 0,
   });
   S.ctx = buildContext(S.program, S.start);
@@ -194,6 +204,7 @@ function renderAll() {
   }
   syncSegments();
   syncProgress();
+  animateFills();
   revealNext();
 }
 
@@ -316,6 +327,7 @@ function seancesHTML() {
            <span class="ph-right"><span class="t-sub num" id="progress-count">${nDone}/${n}</span>
            <button class="btn small plain press" data-action="edit-start">Modifier</button></span></div>
          <div class="progress" id="progress" role="progressbar" aria-label="Progression de la séance" aria-valuemin="0" aria-valuemax="${n}" aria-valuenow="${nDone}"><span></span></div>
+         <p class="t-foot sets-hint">Touche un exercice à chaque série faite · appui long pour en retirer une</p>
          <section class="exlist group" aria-label="Exercices">${plan.exercises.map((ex, i) => exerciseHTML(ex, i, done, nextId(plan, done))).join("")}</section>${finish}${noteHTML(iso)}`}`;
 }
 
@@ -624,7 +636,10 @@ function saveLog() {
   const ids = plan.exercises.map((e) => e.id).filter((x) => done.has(x));
   S.justChecked = newlyDone ? id : null;
   closeModal();
-  S.store.setMany({ [`log:${iso}`]: log, [`ex:${iso}`]: ids });
+  const ex = plan.exercises.find((e) => e.id === id);
+  const sets = { ...(S.store.get(`sets:${iso}`) || {}) };
+  if (ex) { S.fillFrom[id] = setsDone(ex, iso) / seriesCount(ex); sets[id] = seriesCount(ex); }
+  S.store.setMany({ [`log:${iso}`]: log, [`ex:${iso}`]: ids, [`sets:${iso}`]: sets });
   if (newlyDone) haptic();
   toast(`Série notée : ${fmtSet(log[id])}`);
 }
@@ -865,9 +880,95 @@ function toggleExercise(id) {
   const ids = plan.exercises.map((e) => e.id).filter((x) => done.has(x));
   S.justChecked = adding ? id : null;
   if (adding) haptic();
-  S.store.set(`ex:${iso}`, ids.length ? ids : null);
+  const ex = plan.exercises.find((e) => e.id === id);
+  const total = seriesCount(ex);
+  const sets = { ...(S.store.get(`sets:${iso}`) || {}) };
+  S.fillFrom[id] = setsDone(ex, iso) / total;
+  if (adding) sets[id] = total;
+  else delete sets[id];
+  S.store.setMany({ [`ex:${iso}`]: ids.length ? ids : null, [`sets:${iso}`]: Object.keys(sets).length ? sets : null });
   if (adding && ids.length === plan.exercises.length && dayStatus(iso) !== "Fait") toast("Séance complète, pense à la pointer");
 }
+
+/* ----- séries : la case de l'exercice se remplit comme une jauge ----- */
+function setsDone(ex, iso) {
+  const total = seriesCount(ex);
+  const n = (S.store.get(`sets:${iso}`) || {})[ex.id];
+  if (typeof n === "number") return Math.min(n, total);
+  return doneSet(iso).has(ex.id) ? total : 0; // coché avant l'arrivée des séries
+}
+
+function changeSets(id, delta) {
+  const iso = S.selected;
+  const plan = planFor(S.program, iso);
+  const ex = plan.exercises.find((e) => e.id === id);
+  if (!ex) return;
+  const total = seriesCount(ex);
+  const before = setsDone(ex, iso);
+  const after = clamp(before + delta, 0, total);
+  if (after === before) {
+    if (delta > 0) toast("Toutes les séries sont déjà faites · appui long pour en retirer");
+    return;
+  }
+  const sets = { ...(S.store.get(`sets:${iso}`) || {}) };
+  if (after) sets[id] = after;
+  else delete sets[id];
+  const done = doneSet(iso);
+  const wasDone = done.has(id);
+  if (after >= total) done.add(id);
+  else done.delete(id);
+  const ids = plan.exercises.map((e) => e.id).filter((x) => done.has(x));
+  S.fillFrom[id] = before / total;
+  S.justChecked = !wasDone && after >= total ? id : null;
+  S.store.setMany({ [`sets:${iso}`]: Object.keys(sets).length ? sets : null, [`ex:${iso}`]: ids.length ? ids : null });
+  haptic(after >= total ? 20 : 8);
+  if (delta < 0) { toast(`Série retirée · ${after}/${total}`); return; }
+  const allDone = ids.length === plan.exercises.length;
+  // Repos automatique après chaque série (sauf après la toute dernière de la séance).
+  if (S.prefs.autoTimer && restSeconds(ex.rest) && !allDone) startTimer(ex);
+  if (allDone && dayStatus(iso) !== "Fait") toast("Séance complète, pense à la pointer");
+}
+
+/** La jauge glisse de l'ancienne valeur vers la nouvelle. */
+function animateFills() {
+  const from = S.fillFrom;
+  S.fillFrom = {};
+  const els = document.querySelectorAll(".ex-fill[data-to]");
+  if (!els.length) return;
+  for (const el of els) {
+    const id = el.closest(".ex").dataset.ex;
+    if (id in from && !reducedMotion()) el.style.transform = `scaleX(${from[id]})`;
+  }
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    for (const el of els) {
+      el.classList.add("animate");
+      el.style.transform = `scaleX(${el.dataset.to})`;
+    }
+  }));
+}
+
+// Appui long sur la case : retire une série.
+let pressTimer = null;
+let pressStart = null;
+document.addEventListener("pointerdown", (e) => {
+  const hit = e.target.closest && e.target.closest(".ex-hit");
+  if (!hit) return;
+  pressStart = { x: e.clientX, y: e.clientY, id: e.pointerId };
+  clearTimeout(pressTimer);
+  pressTimer = setTimeout(() => {
+    pressTimer = null;
+    S.suppressClickUntil = performance.now() + 600;
+    changeSets(hit.dataset.id, -1);
+  }, 520);
+});
+document.addEventListener("pointermove", (e) => {
+  if (!pressTimer || !pressStart || e.pointerId !== pressStart.id) return;
+  if (Math.hypot(e.clientX - pressStart.x, e.clientY - pressStart.y) > 10) { clearTimeout(pressTimer); pressTimer = null; }
+});
+for (const t of ["pointerup", "pointercancel"]) {
+  document.addEventListener(t, () => { clearTimeout(pressTimer); pressTimer = null; });
+}
+document.addEventListener("contextmenu", (e) => { if (e.target.closest && e.target.closest(".ex-hit")) e.preventDefault(); });
 
 // La barre de progression glisse vers sa nouvelle valeur au lieu de sauter.
 const progressSpring = new Spring(0, { onUpdate: (v) => paintProgress(v) });
@@ -943,11 +1044,18 @@ function exerciseHTML(ex, i, done = new Set(), next = null) {
   const showMethod = ex.method && !(usesRM(ex) && /%/.test(ex.method));
   const isDone = done.has(ex.id);
   const isNext = ex.id === next;
+  const total = seriesCount(ex);
+  const nSets = setsDone(ex, S.selected);
+  const frac = nSets / total;
+  const counter = total > 1 && nSets > 0 && nSets < total ? ` <span class="badge sets">${nSets}/${total}</span>` : "";
   return `<article class="ex ${isDone ? "is-done" : ""} ${isNext ? "is-next" : ""}" data-ex="${esc(ex.id)}">
+    <span class="ex-fill" data-to="${frac}" style="transform:scaleX(${frac})" aria-hidden="true"></span>
+    <button class="ex-hit" data-action="set-add" data-id="${esc(ex.id)}"
+      aria-label="${esc(ex.name)} : ${nSets} série${nSets > 1 ? "s" : ""} sur ${total}. Toucher pour ajouter une série, appui long pour en retirer une."></button>
     <button class="ex-check" data-action="toggle-ex" data-id="${esc(ex.id)}" aria-pressed="${isDone}"
       aria-label="${esc(ex.name)} : ${isDone ? "fait, toucher pour décocher" : "toucher pour cocher"}">
       <span class="ring"><span class="n">${i + 1}</span>${ICON.check}</span></button>
-    <div><h3>${esc(ex.name)}${isNext ? ' <span class="badge next">EN COURS</span>' : ""}</h3>
+    <div class="ex-body"><h3>${esc(ex.name)}${counter}${isNext && !counter ? ' <span class="badge next">EN COURS</span>' : ""}</h3>
       <p class="ex-reps"><strong>${esc(ex.reps)}</strong>${showMethod ? `<span aria-hidden="true">·</span><span>${esc(ex.method)}</span>` : ""}${ex.drop ? '<span class="badge">DROPSET</span>' : ""}</p>
       ${dropLine}
       ${actions.length ? `<div class="ex-actions">${actions.join("")}</div>` : ""}
@@ -1559,7 +1667,12 @@ function settingsHTML(errorMsg) {
     </div>
     <p class="error" id="profile-error" role="alert" style="margin-top:-0.6rem"></p>
     <button class="btn filled wide press" data-action="save-profile">Enregistrer le profil</button>
-    <p class="t-eyebrow list-title" style="margin-top:1.4rem">Programme</p>
+    <p class="t-eyebrow list-title" style="margin-top:1.4rem">Séance</p>
+    <div class="group-list">
+      <label class="list-row"><span class="grow">Lancer le repos après chaque série</span>
+        <input type="checkbox" class="switch" id="pref-autotimer" ${S.prefs.autoTimer ? "checked" : ""}></label>
+    </div>
+    <p class="t-eyebrow list-title">Programme</p>
     <div class="group-list"><button class="list-row danger row-press" data-action="program-reset">Revenir au programme d'origine</button></div>
     <p class="note pad">Pour modifier une séance : onglet Séances, puis « Modifier » au-dessus des exercices.</p>
     <p class="t-eyebrow list-title">Écran d'accueil</p>
@@ -1812,6 +1925,7 @@ function onAction(el) {
     case "clear-day": setDay(date, null); closeModal(); toast("Pointage effacé"); return;
     case "finish": setDay(S.selected, "Fait"); haptic(); toast("Séance pointée : Fait"); return;
     case "toggle-ex": return toggleExercise(id);
+    case "set-add": return changeSets(id, 1);
     case "edit-log": return openLog(id);
     case "log-save": return saveLog();
     case "log-clear": return clearLog();
@@ -1923,6 +2037,11 @@ document.addEventListener("change", (e) => {
   if (e.target.id === "session-note") { clearTimeout(noteTimer); saveNote(e.target.dataset.date, e.target.value); return; }
   if (e.target.id === "cal-month") goToMonth(e.target.value);
   else if (e.target.id === "day-title") saveDayTitle(true);
+  else if (e.target.id === "pref-autotimer") {
+    S.prefs = { ...S.prefs, autoTimer: e.target.checked };
+    savePrefs(S.prefs);
+    toast(e.target.checked ? "Repos automatique activé" : "Repos automatique désactivé");
+  }
   else if (e.target.id === "ef-bw") { const r = $("#ef-pct-row"); if (r) r.hidden = e.target.checked; }
   else if (e.target.id === "ef-drop") { const r = $("#ef-drop-row"); if (r) r.hidden = !e.target.checked; }
   else if (e.target.id === "import-file") handleImportFile(e.target);
