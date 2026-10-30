@@ -302,7 +302,7 @@ main { min-width: 0; padding-bottom: calc(var(--tab-h) + env(safe-area-inset-bot
 @keyframes ring-pop { 0% { transform: scale(0.72); } 55% { transform: scale(1.12); } 100% { transform: scale(1); } }
 .ex.is-done h3 { color: var(--label-2); text-decoration: line-through; text-decoration-color: var(--label-3); }
 .ex.is-done .ex-reps strong { color: var(--label-2); }
-.ex.is-done .ex-actions > :not(.log-btn), .ex.is-done .ex-drop { display: none; }
+.ex.is-done .ex-actions > :not(.log-btn), .ex.is-done .ex-drop, .ex.is-done .ex-suggestion { display: none; }
 .badge.next { color: var(--tint); background: color-mix(in srgb, var(--tint) 14%, transparent); vertical-align: 0.12em; margin-left: 0.2rem; }
 
 /* Progression de la séance */
@@ -415,6 +415,8 @@ main { min-width: 0; padding-bottom: calc(var(--tab-h) + env(safe-area-inset-bot
   color: var(--orange); background: color-mix(in srgb, var(--orange) 15%, transparent);
 }
 .ex-drop { margin-top: 0.35rem; font-size: 0.85rem; color: var(--orange); }
+.ex-suggestion { margin-top: 0.35rem; color: var(--green); font-size: 0.82rem; line-height: 1.35; }
+.ex-suggestion span { color: var(--label-2); }
 .ex-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.65rem; }
 .pill {
   display: inline-flex; align-items: center; gap: 0.4rem; min-height: 2.3rem; padding: 0 0.85rem; border-radius: 999px;
@@ -666,6 +668,14 @@ main { min-width: 0; padding-bottom: calc(var(--tab-h) + env(safe-area-inset-bot
   .topbar { margin: 0 -0.75rem; padding-left: 0.75rem; padding-right: 0.75rem; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .status { padding: 0 0.55rem; }
+}
+
+/* Zone de toucher d'au moins 44 px, sans changer l'apparence des petits boutons. */
+.pill, .chev, .avatar, .btn.small, .link, .close-x { position: relative; }
+.pill::after, .chev::after, .avatar::after, .btn.small::after, .link::after, .close-x::after {
+  content: ""; position: absolute;
+  top: min(0px, calc(50% - 22px)); bottom: min(0px, calc(50% - 22px));
+  left: min(0px, calc(50% - 22px)); right: min(0px, calc(50% - 22px));
 }
 
 /* ---------- Accessibilité ---------- */

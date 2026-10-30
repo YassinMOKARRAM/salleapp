@@ -217,6 +217,22 @@ export function usesRM(ex) {
   return typeof ex.percent === "number";
 }
 
+/**
+ * 25/10/2026 : mardi = Jambes (exercices « mer-1…5 »), mercredi = Épaules (« mar-1…5 »).
+ * Remet dans cet ordre un programme encore à l'ancien ordre ; renvoie true s'il a été modifié.
+ * Ne regarde que les exercices d'origine : jamais de double inversion, même si on relance.
+ */
+export function fixTueWedSwap(program) {
+  if (!program || !Array.isArray(program.days)) return false;
+  const tue = program.days.find((d) => d.day === 2), wed = program.days.find((d) => d.day === 3);
+  if (!tue || !wed) return false;
+  const has = (day, prefix) => (day.exercises || []).some((ex) => new RegExp(`^${prefix}-[1-5]$`).test(ex.id));
+  if (!(has(tue, "mar") && !has(tue, "mer") && has(wed, "mer") && !has(wed, "mar"))) return false;
+  [tue.title, wed.title] = [wed.title, tue.title];
+  [tue.exercises, wed.exercises] = [wed.exercises, tue.exercises];
+  return true;
+}
+
 /** Vérifie le fichier de programme ; renvoie la liste des erreurs. */
 export function checkProgram(program) {
   const errors = [];
@@ -316,6 +332,27 @@ export function formatRange(a, b) {
   if (b == null || a === b) return `≈ ${formatKg(a)}`;
   const lo = Math.min(a, b), hi = Math.max(a, b);
   return `≈ ${formatKg(lo).replace(" kg", "")}–${formatKg(hi)}`;
+}
+
+/**
+ * Conseil à partir de « mon max » (série la plus lourde réussie : { weight, reps }).
+ * Charge = max estimé × % si l'exercice en a un, sinon fourchette avec 2 rép. en réserve.
+ * Renvoie { oneRM, lo, hi, dropLo, dropHi } (kg arrondis à 0,5) ou null.
+ */
+export function maxAdvice(ex, max) {
+  const range = ex && repRange(ex.reps);
+  if (!range || !max) return null;
+  const oneRM = estimate1RM(max.weight, max.reps);
+  if (!oneRM) return null;
+  let lo, hi;
+  if (typeof ex.percent === "number") lo = hi = roundHalf(oneRM * ex.percent);
+  else ({ light: lo, heavy: hi } = suggestedLoads(oneRM, range));
+  const out = { oneRM: roundDisplay(oneRM), lo, hi, dropLo: null, dropHi: null };
+  if (ex.drop && typeof ex.dropPercent === "number") {
+    out.dropLo = roundHalf(dropLoad(lo, ex.dropPercent));
+    out.dropHi = roundHalf(dropLoad(hi, ex.dropPercent));
+  }
+  return out;
 }
 
 export function formatPercent(p) {

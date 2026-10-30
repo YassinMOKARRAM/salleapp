@@ -3,6 +3,8 @@
 Application personnelle de suivi d'entraînement pour iPhone.
 Aucun serveur et aucun compte : tes données restent sur ton téléphone.
 
+Version actuelle : `salle-2026-10-30-2` (visible dans Réglages → Application).
+
 ## Installer
 
 1. Mets le contenu de ce dossier dans un dépôt GitHub (Public).
@@ -37,6 +39,24 @@ Les changements s'appliquent au jour de la semaine choisi et sont inclus dans la
   La semaine suivante, l'app affiche « Dernière fois » et un conseil pour progresser.
 - Onglet Évolution : poids de corps (« Pesée », courbe, objectif) et progression des charges par exercice.
 - Note de séance : sous la liste des exercices, enregistrée automatiquement.
+- « Mon max » (exercices à charge) : indique ta série la plus lourde réussie (poids + répétitions).
+  L'app estime ton max (formule d'Epley) et affiche la charge conseillée pour les répétitions prévues,
+  avec environ 2 répétitions en réserve, arrondie à 0,5 kg. Avec un % du 1RM : max estimé × %.
+  Dropset : la baisse s'applique à cette charge. C'est une estimation, ajuste selon tes sensations.
+
+## Mises à jour
+
+L'app vérifie s'il existe une nouvelle version à chaque ouverture et à chaque retour dedans.
+Juste après l'ouverture, elle se recharge toute seule ; sinon un bandeau « Nouvelle version disponible »
+propose « Mettre à jour ». Le numéro de version est affiché dans Réglages.
+
+Pour publier une modification : change `VERSION` dans `sw.js` **et** `APP_VERSION` dans `js/main.js`
+(même valeur), puis remets les fichiers sur GitHub.
+
+## Tests
+
+`node tests/run.mjs` (Node 18 ou plus, aucune installation) : programme, inversion mardi/mercredi,
+séries, minuteur, « Mon max », sauvegarde, version.
 
 ## Ce qui est public
 

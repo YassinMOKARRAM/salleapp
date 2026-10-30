@@ -4,7 +4,7 @@ import {
   formatClock, formatDateFr, formatKg, formatLongFr, formatPercent, groupRuns, inPeriod, modeText, monthGrid,
   monthLabelFr, monthsOfPeriod, parseDecimalInput, planFor, restSeconds, shortDate, todayInTZ, usesRM,
   validateEntry, validateImport, weekLabel, weekNumber, weekdayIndex, workingLoad, periodEnd, checkProgram,
-  repRange, roundHalf, NOTE_MAX, seriesCount,
+  repRange, roundHalf, NOTE_MAX, seriesCount, formatRange, fixTueWedSwap, maxAdvice,
 } from "./core.js";
 import { askPersistence, clearProgram, createLocalStore, loadPrefs, loadProfile, loadProgram, runOnce, saveProfile, savePrefs, saveProgramData } from "./store.js";
 import { CONFIG, PROGRAM } from "./data.js";
@@ -36,7 +36,7 @@ const ICON = {
 const ST = {
   "Fait": { cls: "done", icon: ICON.check, short: "Fait" },
   "Non fait": { cls: "missed", icon: ICON.cross, short: "Non fait" },
-  "Repos / annulé": { cls: "rest", icon: ICON.pause, short: "Pause" },
+  "Repos / annulé": { cls: "rest", icon: ICON.pause, short: "Repos" },
 };
 const fmtShort = (iso) =>
   new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(`${iso}T00:00:00Z`));
@@ -75,8 +75,10 @@ function toast(msg) {
 }
 
 /* ------------------------------------------------------------------ démarrage */
-const isStandalone = () => navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
 const BACKUP_NAME = "salle-sauvegarde.json";
+// Même valeur que VERSION dans sw.js (vérifié par tests/run.mjs).
+const APP_VERSION = "salle-2026-10-30-2";
+const swState = { registration: null, updateAvailable: false, openedAt: Date.now() };
 
 function boot() {
   const errors = checkProgram(PROGRAM);
@@ -86,14 +88,10 @@ function boot() {
     return;
   }
   // 25/10/2026 : séances du mardi et du mercredi inversées, aussi dans un programme déjà modifié dans l'app.
-  runOnce("swap-mardi-mercredi", () => {
+  // « v2 » : la 1re version inversait sans vérifier l'ordre ; celle-ci remet le bon ordre quel que soit l'état.
+  runOnce("swap-mardi-mercredi-v2", () => {
     const stored = loadProgram(null, checkProgram);
-    if (!stored) return;
-    const tue = stored.days.find((d) => d.day === 2), wed = stored.days.find((d) => d.day === 3);
-    if (!tue || !wed) return;
-    [tue.title, wed.title] = [wed.title, tue.title];
-    [tue.exercises, wed.exercises] = [wed.exercises, tue.exercises];
-    saveProgramData(stored);
+    if (stored && fixTueWedSwap(stored)) saveProgramData(stored);
   });
   const profile = loadProfile();
   startApp({
@@ -101,9 +99,44 @@ function boot() {
     program: loadProgram(PROGRAM, checkProgram),
   });
   askPersistence();
-  if ("serviceWorker" in navigator && location.protocol !== "file:") {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
-  }
+  setupServiceWorker();
+}
+
+/*
+ * Mise à jour de l'app installée : on demande la dernière version à l'ouverture et à chaque retour
+ * dans l'app. La nouvelle version (sw.js) prend la main dès qu'elle est téléchargée ; si c'est
+ * juste après l'ouverture et que rien n'est en cours, on recharge tout de suite, sinon un bandeau
+ * propose « Mettre à jour ».
+ */
+const UPDATE_WINDOW_MS = 8000;
+
+function checkForUpdate() {
+  swState.openedAt = Date.now();
+  swState.registration?.update().catch(() => {});
+}
+
+/** Recharger sans rien perdre : pas de feuille ouverte, de minuteur, d'édition ni de saisie. */
+function canReloadNow() {
+  const a = document.activeElement;
+  return !sheetCtl && !S.timer && !S.editing && !(a && a.matches && a.matches("input, textarea, select"));
+}
+
+function setupServiceWorker() {
+  if (!("serviceWorker" in navigator) || location.protocol === "file:") return;
+  // Premier lancement : pas encore de version installée, donc rien à « mettre à jour ».
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || swState.updateAvailable) return;
+    if (Date.now() - swState.openedAt < UPDATE_WINDOW_MS && canReloadNow()) return window.location.reload();
+    swState.updateAvailable = true;
+    renderAll();
+  });
+  navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then((registration) => {
+    swState.registration = registration;
+    // Version téléchargée lors d'une ouverture précédente mais pas encore active.
+    if (registration.waiting && hadController) registration.waiting.postMessage("SKIP_WAITING");
+    checkForUpdate();
+  }).catch(() => {});
 }
 
 function startApp(data) {
@@ -240,6 +273,10 @@ function backupDue() {
 
 function bannersHTML() {
   let out = "";
+  if (swState.updateAvailable) {
+    out += `<section class="banner group update-banner"><p class="t-headline">Nouvelle version disponible</p>
+      <button class="btn small filled press" data-action="update-app">Mettre à jour</button></section>`;
+  }
   const lastBw = latestWeighIn();
   if (lastBw && diffDaysSimple(lastBw.date, S.today) >= 7) {
     out += `<section class="banner group"><p class="t-headline">Pense à te peser</p>
@@ -1021,16 +1058,22 @@ function exerciseHTML(ex, i, done = new Set(), next = null) {
       load == null ? "Renseigner" : esc(formatKg(load))
     }</b></button>`;
   }
+  const range = repRange(ex.reps);
+  const max = !modes.length && range ? S.store.get(`max:${ex.id}`) : null;
+  const advice = max ? maxAdvice(ex, max) : null;
   if (ex.drop) {
     const load = usesRM(ex) ? workingLoad(S.store.get(`rm:${ex.id}`), ex.percent) : null;
-    const dl = load != null ? dropLoad(load, ex.dropPercent) : null;
+    const dl = load != null ? formatKg(dropLoad(load, ex.dropPercent))
+      : advice && advice.dropLo != null ? formatRange(advice.dropLo, advice.dropHi) : null;
     const cut = typeof ex.dropPercent === "number" ? `baisse de ${formatPercent(ex.dropPercent)}` : "";
-    dropLine = `<p class="ex-drop">Dropset à l'échec${dl != null ? ` : <b>${esc(formatKg(dl))}</b>` : ""}${cut ? ` · ${cut}` : ""}</p>`;
+    dropLine = `<p class="ex-drop">Dropset à l'échec${dl != null ? ` : <b>${esc(dl)}</b>` : ""}${cut ? ` · ${cut}` : ""}</p>`;
   }
   const restBtn = rs
     ? `<button class="pill rest-btn press" data-action="timer" data-id="${esc(ex.id)}" aria-label="Lancer le minuteur de repos : ${esc(ex.rest)}">${ICON.timer}<b>${esc(ex.rest)}</b></button>`
     : "";
-  const range = repRange(ex.reps);
+  const maxLine = advice
+    ? `<p class="ex-suggestion">Conseil : <b>${esc(formatRange(advice.lo, advice.hi))}</b> pour ${esc(repsText(range))} <span>· estimation, ajuste selon tes sensations</span></p>`
+    : "";
   let logBtn = "";
   if (range) {
     const today = (S.store.get(`log:${S.selected}`) || {})[ex.id];
@@ -1040,7 +1083,11 @@ function exerciseHTML(ex, i, done = new Set(), next = null) {
       : last ? `<small>Dernière fois</small><b>${esc(fmtSet(last))}</b>`
       : `<small>Charge</small><b>Noter</b>`}</button>`;
   }
-  const actions = [logBtn, restBtn, loadBtn].filter(Boolean);
+  const maxBtn = !modes.length && range
+    ? `<button class="pill press" data-action="edit-max" data-id="${esc(ex.id)}"><small>Mon max</small><b>${
+      max ? esc(`${formatKg(max.weight)} × ${max.reps}`) : "Renseigner"}</b></button>`
+    : "";
+  const actions = [logBtn, maxBtn, restBtn, loadBtn].filter(Boolean);
   const showMethod = ex.method && !(usesRM(ex) && /%/.test(ex.method));
   const isDone = done.has(ex.id);
   const isNext = ex.id === next;
@@ -1057,6 +1104,7 @@ function exerciseHTML(ex, i, done = new Set(), next = null) {
       <span class="ring"><span class="n">${i + 1}</span>${ICON.check}</span></button>
     <div class="ex-body"><h3>${esc(ex.name)}${counter}${isNext && !counter ? ' <span class="badge next">EN COURS</span>' : ""}</h3>
       <p class="ex-reps"><strong>${esc(ex.reps)}</strong>${showMethod ? `<span aria-hidden="true">·</span><span>${esc(ex.method)}</span>` : ""}${ex.drop ? '<span class="badge">DROPSET</span>' : ""}</p>
+      ${maxLine}
       ${dropLine}
       ${actions.length ? `<div class="ex-actions">${actions.join("")}</div>` : ""}
     </div>
@@ -1385,7 +1433,12 @@ function updateSheetTouch(ctl) {
 }
 
 function openModal(html, focusSel) {
-  if (sheetCtl) removeSheet(sheetCtl);
+  if (sheetCtl) {
+    // Feuille précédente encore en train de se fermer : on la retire sans perdre l'état de la nouvelle.
+    const next = S.modal;
+    removeSheet(sheetCtl);
+    S.modal = next;
+  }
   S.opener = document.activeElement;
   const root = $("#modal-root");
   root.innerHTML = `<div class="overlay"><div class="scrim" data-action="close-bg"></div>
@@ -1574,6 +1627,71 @@ function saveRm(id) {
   toast(v.value == null ? "1RM effacé" : `1RM enregistré : ${formatKg(v.value)}`);
 }
 
+function maxParse(raw, { min = 0, max = LIMITS.rmMax } = {}) {
+  return parseDecimalInput(raw, { min, minInclusive: false, max });
+}
+
+const repsText = (range) => `${range.lo === range.hi ? range.lo : `${range.lo}–${range.hi}`} rép.`;
+
+function maxPreviewHTML(ex, weight, reps) {
+  if (!weight.ok || weight.empty || !/^\d{1,2}$/.test(reps) || Number(reps) < 1 || Number(reps) > 30) return "";
+  const a = maxAdvice(ex, { weight: weight.value, reps: Number(reps) });
+  if (!a) return "";
+  const range = repRange(ex.reps);
+  let rows = `<div class="list-row result"><small>Max estimé (1 rép.)</small><b>${esc(formatKg(a.oneRM))}</b></div>
+    <div class="list-row result"><small>Charge conseillée · ${typeof ex.percent === "number" ? `${esc(formatPercent(ex.percent))} du max` : esc(repsText(range))}</small><b>${esc(formatRange(a.lo, a.hi))}</b></div>`;
+  if (a.dropLo != null) {
+    rows += `<div class="list-row result"><small>Dropset (−${esc(formatPercent(ex.dropPercent))})</small><b>${esc(formatRange(a.dropLo, a.dropHi))}</b></div>`;
+  }
+  return `<div class="group-list">${rows}</div>
+    <p class="note pad" style="margin-top:0">Estimation, ajuste selon tes sensations.</p>`;
+}
+
+function openMax(id) {
+  const ex = S.ctx.exercises.get(id);
+  const range = ex && repRange(ex.reps);
+  if (!ex || exerciseModes(ex).length || !range) return;
+  const cur = S.store.get(`max:${id}`);
+  const weight = cur ? String(cur.weight).replace(".", ",") : "";
+  const reps = cur ? String(cur.reps) : "";
+  S.modal = { kind: "max", id };
+  openModal(sheet("Mon max", esc(ex.name), `
+    <p class="note pad" style="margin-top:0">Indique la série la plus lourde réussie proprement.</p>
+    <label class="field-big"><span>Poids le plus lourd réussi</span>
+      <span class="with-unit"><input id="max-weight" inputmode="decimal" autocomplete="off" enterkeyhint="next" value="${esc(weight)}" placeholder="0"><span class="unit">kg</span></span></label>
+    <div class="group-list"><label class="list-row"><span class="grow">Répétitions</span>
+      <input class="inline-input num" id="max-reps" inputmode="numeric" maxlength="2" value="${esc(reps)}" placeholder="1"></label></div>
+    <p class="error" id="max-error" role="alert"></p>
+    <div id="max-preview">${maxPreviewHTML(ex, maxParse(weight), reps)}</div>
+    <div class="actions-2">
+      <button class="btn press" data-action="close-modal">Annuler</button>
+      <button class="btn filled press" data-action="save-max" data-id="${esc(id)}">Enregistrer</button>
+    </div>
+    ${cur ? `<button class="btn plain danger wide press" style="margin-top:0.4rem" data-action="clear-max" data-id="${esc(id)}">Effacer mon max</button>` : ""}`), "#max-weight");
+}
+
+function updateMaxPreview() {
+  const el = $("#max-preview");
+  if (!el || !S.modal || S.modal.kind !== "max") return;
+  const ex = S.ctx.exercises.get(S.modal.id);
+  el.innerHTML = maxPreviewHTML(ex, maxParse($("#max-weight").value), $("#max-reps").value.trim());
+}
+
+function saveMax(id) {
+  const weight = maxParse($("#max-weight").value);
+  const repsRaw = $("#max-reps").value.trim();
+  const err = $("#max-error");
+  if (!weight.ok) { err.textContent = weight.error; return; }
+  if (weight.empty || !/^\d{1,2}$/.test(repsRaw) || Number(repsRaw) < 1 || Number(repsRaw) > 30) {
+    err.textContent = "Indique un poids et entre 1 et 30 répétitions."; return;
+  }
+  const v = validateEntry(`max:${id}`, { weight: weight.value, reps: Number(repsRaw) }, S.ctx);
+  if (!v.ok) { err.textContent = v.error; return; }
+  S.store.set(`max:${id}`, v.value);
+  closeModal();
+  toast(`Max enregistré : ${formatKg(v.value.weight)} × ${v.value.reps}`);
+}
+
 /* ----- réglage PDC / lesté / assisté ----- */
 const bodyParse = (raw) => parseDecimalInput(raw, { min: 0, minInclusive: true, max: LIMITS.bodyMax });
 
@@ -1675,6 +1793,8 @@ function settingsHTML(errorMsg) {
     <p class="t-eyebrow list-title">Programme</p>
     <div class="group-list"><button class="list-row danger row-press" data-action="program-reset">Revenir au programme d'origine</button></div>
     <p class="note pad">Pour modifier une séance : onglet Séances, puis « Modifier » au-dessus des exercices.</p>
+    <p class="t-eyebrow list-title">Application</p>
+    <div class="group-list"><div class="list-row"><span class="grow">Version</span><b class="num">${esc(APP_VERSION)}</b></div></div>
     <p class="t-eyebrow list-title">Écran d'accueil</p>
     <div class="group-list"><ol class="steps"><li>Ouvre ce site dans Safari.</li><li>Touche Partager, puis « Sur l'écran d'accueil ».</li>
       <li>Ouvre ensuite toujours Salle depuis l'icône.</li></ol></div>`);
@@ -1765,7 +1885,10 @@ async function handleImportFile(input) {
   let program = null;
   try {
     const p = JSON.parse(text).program;
-    if (p && Array.isArray(p.days) && checkProgram(p).length === 0) program = p;
+    if (p && Array.isArray(p.days) && checkProgram(p).length === 0) {
+      fixTueWedSwap(p); // sauvegarde faite avant l'inversion du 25/10
+      program = p;
+    }
   } catch { /* vérifié juste après */ }
   const r = validateImport(text, program ? buildContext(program, S.start) : S.ctx);
   if (!r.ok) return err(r.error);
@@ -1945,6 +2068,9 @@ function onAction(el) {
     case "edit-rm": return openRm(id);
     case "save-rm": return saveRm(id);
     case "clear-rm": S.store.set(`rm:${id}`, null); closeModal(); toast("1RM effacé"); return;
+    case "edit-max": return openMax(id);
+    case "save-max": return saveMax(id);
+    case "clear-max": S.store.set(`max:${id}`, null); closeModal(); toast("Max effacé"); return;
     case "edit-body": return openBody(id);
     case "set-mode": {
       const inp = $("#body-input");
@@ -1977,6 +2103,7 @@ function onAction(el) {
     case "close-modal":
     case "close-bg": return closeModal();
     case "backup": return saveToFiles();
+    case "update-app": return window.location.reload();
     case "save-profile": return saveProfileFromForm();
     case "export-csv": return exportCsv();
     case "import-cancel": return openSettings();
@@ -2021,6 +2148,12 @@ document.addEventListener("input", (e) => {
     noteTimer = setTimeout(() => saveNote(iso, value), 500);
     return;
   }
+  if (S.modal && S.modal.kind === "max" && (e.target.id === "max-weight" || e.target.id === "max-reps")) {
+    const p = maxParse($("#max-weight").value);
+    $("#max-error").textContent = p.ok ? "" : p.error;
+    updateMaxPreview();
+    return;
+  }
   if (e.target.id === "rm-input" && S.modal && S.modal.kind === "rm") {
     const ex = S.ctx.exercises.get(S.modal.id);
     const p = rmParse(e.target.value);
@@ -2062,6 +2195,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "Enter" && open && ["lg-w", "lg-r"].includes(e.target.id)) { e.preventDefault(); saveLog(); return; }
+  if (e.key === "Enter" && open && ["max-weight", "max-reps"].includes(e.target.id)) { e.preventDefault(); saveMax(S.modal.id); return; }
   if (e.key === "Enter" && open && e.target.id === "bw-input") { e.preventDefault(); saveWeighIn(); return; }
   if (e.key === "Enter" && open && (e.target.id === "rm-input" || e.target.id === "body-input")) {
     e.preventDefault();
@@ -2104,7 +2238,12 @@ function checkDayChange() {
   if (followed) S.selected = clampToPeriod(t, S.start);
   renderAll();
 }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkDayChange(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    checkDayChange();
+    checkForUpdate();
+  }
+});
 window.addEventListener("focus", checkDayChange);
 setInterval(checkDayChange, 30000);
 
