@@ -6,26 +6,37 @@ import {
   addDays, buildContext, buildExport, checkProgram, estimate1RM, fixTueWedSwap, formatClock, formatRange, maxAdvice,
   periodEnd, planFor, repRange, restSeconds, seriesCount, suggestedLoads, validateEntry, validateImport, weekLabel,
 } from "../js/core.js";
-import { CONFIG, PROGRAM } from "../js/data.js";
+import { CONFIG, PROGRAM, TEMPLATES, templateProgram } from "../js/data.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (p) => readFileSync(root + p, "utf8");
 let passed = 0;
-const pending = [];
+// Les tests s'exécutent l'un après l'autre (certains partagent un localStorage simulé).
+let queue = Promise.resolve();
 const test = (name, fn) => {
-  const fail = (e) => { console.error(`ÉCHEC  ${name}\n${e.stack}`); process.exitCode = 1; };
-  const ok = () => { passed++; console.log(`ok  ${name}`); };
-  try {
-    const r = fn();
-    if (r && r.then) pending.push(r.then(ok, fail));
-    else ok();
-  } catch (e) { fail(e); }
+  queue = queue.then(async () => {
+    try { await fn(); passed++; console.log(`ok  ${name}`); } catch (e) { console.error(`ÉCHEC  ${name}\n${e.stack}`); process.exitCode = 1; }
+  });
 };
 const clone = (x) => structuredClone(x);
 const ids = (p, day) => p.days.find((d) => d.day === day).exercises.map((e) => e.id);
 
 /* ---------- programme ---------- */
 test("programme valide", () => assert.deepEqual(checkProgram(PROGRAM), []));
+test("modèles valides, sans les identifiants « mar-1…5 / mer-1…5 » ailleurs que dans le split", () => {
+  assert.ok(TEMPLATES.length >= 3);
+  for (const t of TEMPLATES) {
+    assert.deepEqual(checkProgram(t.program), [], t.id);
+    assert.equal(t.program.days.length, 7, t.id);
+    assert.equal(fixTueWedSwap(templateProgram(t.id)), false, t.id);
+  }
+  assert.deepEqual(templateProgram("split5"), PROGRAM);
+  assert.deepEqual(templateProgram("inconnu"), PROGRAM);
+  const a = templateProgram("fullbody3");
+  a.days[0].title = "modifié";
+  assert.notEqual(templateProgram("fullbody3").days[0].title, "modifié"); // copie, pas le modèle
+  assert.ok(templateProgram("vide").days.every((d) => d.exercises.length === 0));
+});
 test("mardi = Jambes, mercredi = Épaules, jeudi/vendredi = repos", () => {
   assert.equal(planFor(PROGRAM, "2026-10-27").title, "Jambes");
   assert.equal(planFor(PROGRAM, "2026-10-28").title, "Épaules + rappel pecs/bras");
@@ -85,14 +96,43 @@ test("migration via store.js : runOnce une seule fois, programme modifié corrig
   assert.ok(mem.has("salle:v1:migrations"));
 });
 
+test("profil public : nouvel utilisateur sans profil, ancien utilisateur gardé", async () => {
+  const mem = new Map();
+  globalThis.localStorage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
+  const store = await import("../js/store.js");
+  const migrate = () => store.runOnce("profil-public", () => {
+    const p = store.loadProfile();
+    if (!p.start && store.hasStoredData()) store.saveProfile({ ...p, start: CONFIG.legacyStart, template: "split5" });
+  });
+  // Téléphone neuf : rien → l'accueil s'affiche (pas de date de début).
+  migrate();
+  assert.equal(store.loadProfile().start, null);
+  // Ancien utilisateur : des pointages existent → début du 24/10/2026 et programme d'origine.
+  mem.clear();
+  mem.set("salle:v1:entries", JSON.stringify({ "day:2026-10-27": "Fait" }));
+  mem.set("salle:v1:profile", JSON.stringify({ firstName: "Yassin", goal: null }));
+  migrate();
+  assert.deepEqual(store.loadProfile(), { firstName: "Yassin", goal: null, start: "2026-10-24", template: "split5" });
+  // Profil déjà créé à l'accueil : jamais écrasé.
+  mem.clear();
+  mem.set("salle:v1:entries", JSON.stringify({ "day:2027-01-04": "Fait" }));
+  mem.set("salle:v1:profile", JSON.stringify({ firstName: "Léa", goal: null, start: "2027-01-04", template: "fullbody3" }));
+  migrate();
+  assert.equal(store.loadProfile().start, "2027-01-04");
+  assert.equal(store.loadProfile().template, "fullbody3");
+  assert.equal(store.loadProfile.length, 0);
+  mem.set("salle:v1:profile", JSON.stringify({ start: "2027-02-30" }));
+  assert.equal(store.loadProfile().start, null); // date impossible ignorée
+});
+
 /* ---------- dates, séries, minuteur ---------- */
 test("période et semaines", () => {
-  assert.equal(CONFIG.start, "2026-10-24");
-  assert.equal(periodEnd(CONFIG.start), "2027-10-23");
-  assert.equal(weekLabel("2026-10-24", CONFIG.start), "Semaine 00");
-  assert.equal(weekLabel("2026-10-25", CONFIG.start), "Semaine 00");
-  assert.equal(weekLabel("2026-10-26", CONFIG.start), "Semaine 01");
-  assert.equal(weekLabel(addDays("2026-10-26", 7), CONFIG.start), "Semaine 02");
+  assert.equal(CONFIG.legacyStart, "2026-10-24");
+  assert.equal(periodEnd(CONFIG.legacyStart), "2027-10-23");
+  assert.equal(weekLabel("2026-10-24", CONFIG.legacyStart), "Semaine 00");
+  assert.equal(weekLabel("2026-10-25", CONFIG.legacyStart), "Semaine 00");
+  assert.equal(weekLabel("2026-10-26", CONFIG.legacyStart), "Semaine 01");
+  assert.equal(weekLabel(addDays("2026-10-26", 7), CONFIG.legacyStart), "Semaine 02");
 });
 test("minuteur : borne haute", () => {
   assert.equal(restSeconds("90–120 s"), 120);
@@ -135,13 +175,13 @@ test("durées et poids du corps : pas de conseil", () => {
   assert.equal(maxAdvice(ex({ reps: "15 min" }), { weight: 50, reps: 5 }), null);
 });
 test("validation de max:<id> et inclusion dans la sauvegarde", () => {
-  const ctx = buildContext(PROGRAM, CONFIG.start);
+  const ctx = buildContext(PROGRAM, CONFIG.legacyStart);
   assert.deepEqual(validateEntry("max:lun-1", { weight: 70.123, reps: 5 }, ctx), { ok: true, value: { weight: 70.12, reps: 5 } });
   assert.equal(validateEntry("max:lun-1", { weight: 70, reps: 31 }, ctx).ok, false);
   assert.equal(validateEntry("max:lun-1", { weight: 0, reps: 5 }, ctx).ok, false);
   assert.equal(validateEntry("max:sam-5", { weight: 10, reps: 5 }, ctx).ok, false); // gainage, poids du corps
   assert.equal(validateEntry("max:inconnu", { weight: 10, reps: 5 }, ctx).ok, false);
-  const file = JSON.stringify(buildExport({ "max:lun-1": { weight: 70, reps: 5 }, "day:2026-10-27": "Fait" }, CONFIG.start));
+  const file = JSON.stringify(buildExport({ "max:lun-1": { weight: 70, reps: 5 }, "day:2026-10-27": "Fait" }, CONFIG.legacyStart));
   const r = validateImport(file, ctx);
   assert.equal(r.ok, true);
   assert.deepEqual(r.entries["max:lun-1"], { weight: 70, reps: 5 });
@@ -167,5 +207,5 @@ test("plus de bandeau « Ajoute Salle à ton écran d'accueil »", () => {
   assert.ok(!/Ajoute Salle/i.test(read("js/main.js")));
 });
 
-await Promise.all(pending);
+await queue;
 console.log(process.exitCode ? "\nDes tests échouent." : `\n${passed} tests réussis.`);

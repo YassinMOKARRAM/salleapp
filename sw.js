@@ -1,7 +1,7 @@
 // Fait fonctionner l'app sans connexion : tous les fichiers sont gardés sur le téléphone.
 // Une nouvelle version prend la main dès qu'elle est téléchargée ; la page recharge ou propose « Mettre à jour ».
 // Change ce numéro à chaque modification pour forcer la mise à jour (et APP_VERSION dans js/main.js).
-const VERSION = "salle-2026-10-30-2";
+const VERSION = "salle-2026-10-30-3";
 
 const ASSETS = [
   "./",

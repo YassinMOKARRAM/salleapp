@@ -139,6 +139,20 @@ svg.i {
 .auth-logo svg { width: 2.2rem; height: 2.2rem; }
 .auth h1 { text-align: center; }
 .auth .t-sub { text-align: center; margin: 0.4rem 0 1.6rem; }
+/* ---------- Accueil (premier lancement) ---------- */
+.welcome {
+  max-width: 26rem; margin: 0 auto;
+  padding: calc(env(safe-area-inset-top) + 2.5rem) 1rem calc(env(safe-area-inset-bottom) + 2rem);
+}
+.welcome h1 { text-align: center; }
+.welcome > .t-sub { text-align: center; margin: 0.4rem 0 1.8rem; }
+.welcome .list-title { padding: 0 1rem 0.4rem; }
+.welcome .note.pad { margin-top: -0.7rem; }
+.welcome-restore { margin-top: 0.5rem; }
+.date-input { width: auto; min-height: 2.2rem; color: var(--label); -webkit-appearance: none; appearance: none; }
+.tpl-row .grow b { display: block; font-weight: 600; }
+.tpl-row .grow small { display: block; font-size: 0.82rem; color: var(--label-2); margin-top: 0.1rem; }
+.tpl-row[aria-pressed="true"] { font-weight: inherit; }
 .group-form { background: var(--bg-2); border-radius: var(--radius-group); overflow: hidden; margin-bottom: 0.75rem; }
 .group-form label { display: block; padding: 0 1rem; position: relative; }
 .group-form label + label::before {

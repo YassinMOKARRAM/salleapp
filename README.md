@@ -1,11 +1,21 @@
 # Salle
 
-Application personnelle de suivi d'entraînement pour iPhone.
-Aucun serveur et aucun compte : tes données restent sur ton téléphone.
+Suivi de musculation pour iPhone, ouvert à tous : https://yassinmokarram.github.io/salleapp/
+Aucun serveur et aucun mot de passe : les données de chacun restent sur son téléphone.
 
-Version actuelle : `salle-2026-10-30-2` (visible dans Réglages → Application).
+Version actuelle : `salle-2026-10-30-3` (visible dans Réglages → Application).
 
-## Installer
+## Premier lancement
+
+Un écran d'accueil demande le prénom, le poids et l'objectif (facultatifs), la date de début du suivi
+(le calendrier couvre un an à partir de cette date) et un modèle de programme :
+Full body 3 jours, Haut / bas 4 jours, Split 5 jours ou Programme vide.
+« J'ai déjà une sauvegarde » restaure un fichier de Salle (nouveau téléphone).
+
+Les données créées avant l'arrivée des profils gardent leur début (24/10/2026) et le Split 5 jours :
+l'accueil ne s'affiche pas pour elles.
+
+## Installer (pour héberger ta propre copie)
 
 1. Mets le contenu de ce dossier dans un dépôt GitHub (Public).
 2. Dans le dépôt : Settings → Pages → Branch `main`, dossier `/ (root)` → Save.
@@ -25,7 +35,8 @@ Directement dans l'app : onglet Séances → « Modifier » au-dessus des exerci
 Tu peux changer le nom de la séance, ajouter, modifier, supprimer ou réordonner les exercices
 (séries, répétitions, repos, consigne, % du 1RM, dropset, poids du corps).
 Les changements s'appliquent au jour de la semaine choisi et sont inclus dans la sauvegarde Fichiers.
-« Revenir au programme d'origine » (Réglages) remet le contenu de `js/data.js`.
+Réglages → « Repartir d'un modèle » remplace le programme par un autre modèle (calendrier, pesées et notes gardés).
+« Revenir au programme d'origine » remet le modèle choisi au départ. Les modèles sont dans `js/data.js`.
 
 ## Pendant la séance
 
@@ -56,9 +67,11 @@ Pour publier une modification : change `VERSION` dans `sw.js` **et** `APP_VERSIO
 ## Tests
 
 `node tests/run.mjs` (Node 18 ou plus, aucune installation) : programme, inversion mardi/mercredi,
-séries, minuteur, « Mon max », sauvegarde, version.
+modèles, profil (nouvel et ancien utilisateur), séries, minuteur, « Mon max », sauvegarde, version.
 
-## Ce qui est public
+## Données personnelles
 
-Le dépôt GitHub contient seulement l'app et le programme.
-Ton prénom, ton objectif et tes pointages ne sont jamais envoyés : ils restent dans l'app sur ton iPhone.
+Le dépôt GitHub contient seulement l'app et les modèles de programme.
+Prénom, objectif, programme, pointages et charges ne sont jamais envoyés : ils restent dans l'app,
+sur le téléphone de chaque personne. Réglages → « Effacer toutes mes données » supprime tout.
+Changer de téléphone = « Sauvegarder dans Fichiers » puis « J'ai déjà une sauvegarde » sur le nouveau.

@@ -3,11 +3,14 @@ import {
   capitalize, clampToPeriod, computeStats, dayNumber, dropLoad, exerciseModes, firstPeriodDayOfMonth,
   formatClock, formatDateFr, formatKg, formatLongFr, formatPercent, groupRuns, inPeriod, modeText, monthGrid,
   monthLabelFr, monthsOfPeriod, parseDecimalInput, planFor, restSeconds, shortDate, todayInTZ, usesRM,
-  validateEntry, validateImport, weekLabel, weekNumber, weekdayIndex, workingLoad, periodEnd, checkProgram,
+  validateEntry, validateImport, weekLabel, isValidISO, weekNumber, weekdayIndex, workingLoad, periodEnd, checkProgram,
   repRange, roundHalf, NOTE_MAX, seriesCount, formatRange, fixTueWedSwap, maxAdvice,
 } from "./core.js";
-import { askPersistence, clearProgram, createLocalStore, loadPrefs, loadProfile, loadProgram, runOnce, saveProfile, savePrefs, saveProgramData } from "./store.js";
-import { CONFIG, PROGRAM } from "./data.js";
+import {
+  askPersistence, clearAllData, clearProgram, createLocalStore, hasStoredData, loadPrefs, loadProfile, loadProgram, runOnce,
+  saveProfile, savePrefs, saveProgramData,
+} from "./store.js";
+import { CONFIG, TEMPLATES, templateProgram } from "./data.js";
 import { HYSTERESIS, Spring, VelocityTracker, clamp, haptic, project, reducedMotion, rubberband } from "./motion.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -77,11 +80,11 @@ function toast(msg) {
 /* ------------------------------------------------------------------ démarrage */
 const BACKUP_NAME = "salle-sauvegarde.json";
 // Même valeur que VERSION dans sw.js (vérifié par tests/run.mjs).
-const APP_VERSION = "salle-2026-10-30-2";
+const APP_VERSION = "salle-2026-10-30-3";
 const swState = { registration: null, updateAvailable: false, openedAt: Date.now() };
 
 function boot() {
-  const errors = checkProgram(PROGRAM);
+  const errors = TEMPLATES.flatMap((t) => checkProgram(t.program).map((e) => `${t.name} : ${e}`));
   if (errors.length) {
     app.innerHTML = `<div class="auth"><div class="auth-card"><div class="auth-logo">${ICON.dumbbell}</div><h1 class="t-large">Salle</h1>
       <p class="t-sub">Le programme (js/data.js) contient une erreur :<br>${errors.map(esc).join("<br>")}</p></div></div>`;
@@ -93,13 +96,28 @@ function boot() {
     const stored = loadProgram(null, checkProgram);
     if (stored && fixTueWedSwap(stored)) saveProgramData(stored);
   });
-  const profile = loadProfile();
-  startApp({
-    config: { ...CONFIG, end: periodEnd(CONFIG.start), firstName: profile.firstName, goal: profile.goal },
-    program: loadProgram(PROGRAM, checkProgram),
+  // 30/10/2026 : l'app devient publique et chaque profil porte sa date de début et son modèle.
+  // Les données créées avant gardent le début du 24/10/2026 et le programme d'origine (split 5 jours).
+  runOnce("profil-public", () => {
+    const p = loadProfile();
+    if (!p.start && hasStoredData()) saveProfile({ ...p, start: CONFIG.legacyStart, template: "split5" });
   });
   askPersistence();
   setupServiceWorker();
+  const profile = loadProfile();
+  if (profile.start) launch(profile);
+  else renderWelcome();
+}
+
+/** Ouvre l'app pour ce profil (au démarrage, après l'accueil ou une restauration). */
+function launch(profile) {
+  startApp({
+    config: {
+      appName: CONFIG.appName, start: profile.start, end: periodEnd(profile.start),
+      firstName: profile.firstName, goal: profile.goal, template: profile.template,
+    },
+    program: loadProgram(templateProgram(profile.template), checkProgram),
+  });
 }
 
 /*
@@ -142,8 +160,8 @@ function setupServiceWorker() {
 function startApp(data) {
   Object.assign(S, {
     config: data.config, program: data.program, start: data.config.start, end: data.config.end,
-    tz: data.config.timezone || "Europe/Paris", userEmail: "", tab: "seances", calMode: "frise", prefs: loadPrefs(), fillFrom: {},
-    scope: "all", friseLeft: null, modal: null, timer: null, weekCommit: 0,
+    tz: deviceTimeZone(), userEmail: "", tab: "seances", calMode: "frise", prefs: loadPrefs(), fillFrom: {},
+    scope: "all", friseLeft: null, modal: null, timer: null, weekCommit: 0, editing: false,
   });
   S.ctx = buildContext(S.program, S.start);
   S.period = buildPeriod(S.start);
@@ -158,6 +176,86 @@ function startApp(data) {
   });
   renderShell();
   renderAll();
+}
+
+/** Fuseau du téléphone : « aujourd'hui » suit l'heure locale de chacun. */
+function deviceTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Paris";
+  } catch {
+    return "Europe/Paris";
+  }
+}
+
+/* ------------------------------------------------------------------ accueil (premier lancement) */
+const W_STATE = { template: TEMPLATES[0].id };
+
+/** Jours d'entraînement d'un programme : « Lun, Mer, Ven · 3 séances ». */
+function programDaysText(program) {
+  const days = program.days.filter((d) => (d.exercises || []).length).sort((a, b) => a.day - b.day);
+  if (!days.length) return "Aucune séance prévue";
+  return `${days.map((d) => WEEKDAYS_SHORT[d.day - 1]).join(", ")} · ${days.length} séance${days.length > 1 ? "s" : ""}`;
+}
+
+function templatesHTML(selected) {
+  return `<div class="group-list">${TEMPLATES.map((t) => `<button class="list-row status-choice tpl-row row-press" data-action="pick-template" data-template="${esc(t.id)}" aria-pressed="${t.id === selected}">
+      <span class="grow"><b>${esc(t.name)}</b><small>${esc(t.summary)}</small><small>${esc(programDaysText(t.program))}</small></span>
+      <span class="check">${ICON.check}</span></button>`).join("")}</div>`;
+}
+
+function renderWelcome() {
+  S.store = null;
+  const today = todayInTZ(deviceTimeZone());
+  app.innerHTML = `<main class="welcome" id="welcome">
+    <div class="auth-logo">${ICON.dumbbell}</div>
+    <h1 class="t-large">Bienvenue dans Salle</h1>
+    <p class="t-sub">Ton suivi de musculation. Pas de compte ni de mot de passe : tout reste sur ce téléphone.</p>
+    <p class="t-eyebrow list-title">Toi</p>
+    <div class="group-list">
+      <label class="list-row"><span class="grow">Prénom</span>
+        <input class="inline-input" id="wl-name" placeholder="Facultatif" autocomplete="given-name" maxlength="40" enterkeyhint="next"></label>
+      <label class="list-row"><span class="grow">Poids actuel (kg)</span>
+        <input class="inline-input num" id="wl-from" inputmode="decimal" placeholder="Facultatif"></label>
+      <label class="list-row"><span class="grow">Objectif (kg)</span>
+        <input class="inline-input num" id="wl-to" inputmode="decimal" placeholder="Facultatif"></label>
+    </div>
+    <p class="t-eyebrow list-title">Début du suivi</p>
+    <div class="group-list">
+      <label class="list-row"><span class="grow">Date de début</span>
+        <input class="inline-input date-input" type="date" id="wl-start" value="${today}"></label>
+    </div>
+    <p class="note pad">Ton calendrier couvre un an à partir de cette date.</p>
+    <p class="t-eyebrow list-title">Ton programme</p>
+    ${templatesHTML(W_STATE.template)}
+    <p class="note pad">Tu pourras tout changer ensuite : séances, exercices, séries, repos.</p>
+    <p class="error" id="wl-error" role="alert"></p>
+    <button class="btn filled wide press" data-action="welcome-start">Commencer</button>
+    <label class="btn plain wide press file-row welcome-restore">J'ai déjà une sauvegarde
+      <input type="file" id="welcome-import" accept=".json,application/json" aria-label="Restaurer une sauvegarde"></label>
+  </main>`;
+}
+
+/** Lit le prénom et l'objectif d'un formulaire (accueil ou réglages). */
+function readProfileFields(prefix) {
+  const name = $(`#${prefix}-name`).value.trim().slice(0, 40);
+  const opts = { min: 20, minInclusive: true, max: 400 };
+  const from = parseDecimalInput($(`#${prefix}-from`).value, opts);
+  const to = parseDecimalInput($(`#${prefix}-to`).value, opts);
+  if (!from.ok || !to.ok) return { error: "Poids entre 20 et 400 kg." };
+  if (from.empty !== to.empty) return { error: "Remplis les deux poids, ou aucun." };
+  return { firstName: name, goal: from.empty ? null : { from: from.value, to: to.value } };
+}
+
+function welcomeStart() {
+  const err = (m) => { $("#wl-error").textContent = m; };
+  const fields = readProfileFields("wl");
+  if (fields.error) return err(fields.error);
+  const start = $("#wl-start").value;
+  if (!isValidISO(start) || start < "2000-01-01") return err("Choisis une date de début.");
+  const profile = { ...fields, start, template: W_STATE.template };
+  if (!saveProfile(profile)) return err("Impossible d'enregistrer sur ce téléphone (navigation privée ?).");
+  launch(loadProfile());
+  toast(fields.firstName ? `Bienvenue ${fields.firstName} !` : "Bienvenue !");
 }
 
 /* ------------------------------------------------------------------ contrôle segmenté */
@@ -577,11 +675,70 @@ function resetProgram() {
     return;
   }
   clearProgram();
-  S.program = PROGRAM;
-  S.ctx = buildContext(PROGRAM, S.start);
+  S.program = templateProgram(S.config.template);
+  S.ctx = buildContext(S.program, S.start);
   closeModal();
   renderAll();
   toast("Programme d'origine rétabli");
+}
+
+/* ----- repartir d'un autre modèle ----- */
+function templatePickerHTML() {
+  const m = S.modal;
+  const t = TEMPLATES.find((x) => x.id === m.template);
+  return sheet("Repartir d'un modèle", "Remplace tout ton programme", `
+    ${templatesHTML(m.template)}
+    <p class="note pad">Ton calendrier, tes pesées et tes notes sont gardés. Les charges des exercices qui disparaissent ne sont plus affichées.</p>
+    <div class="actions-2">
+      <button class="btn press" data-action="open-settings">Annuler</button>
+      <button class="btn filled press ${m.armed ? "armed" : ""}" data-action="template-apply">${m.armed ? "Confirmer" : `Choisir « ${esc(t.name)} »`}</button>
+    </div>`);
+}
+
+function openTemplatePicker() {
+  S.modal = { kind: "templates", template: S.config.template || "split5", armed: false };
+  setSheetContent(templatePickerHTML());
+}
+
+function pickTemplate(id) {
+  if (!TEMPLATES.some((t) => t.id === id)) return;
+  if (S.modal && S.modal.kind === "templates") {
+    S.modal.template = id;
+    S.modal.armed = false;
+    setSheetContent(templatePickerHTML());
+    return;
+  }
+  // Écran d'accueil : on coche sans tout réafficher, pour garder ce qui est déjà saisi.
+  W_STATE.template = id;
+  for (const b of document.querySelectorAll("[data-action=pick-template]")) b.setAttribute("aria-pressed", String(b.dataset.template === id));
+}
+
+function applyTemplate() {
+  const m = S.modal;
+  if (!m.armed) { m.armed = true; setSheetContent(templatePickerHTML()); return; }
+  const program = templateProgram(m.template);
+  if (!saveProgramData(program) || !saveProfile({ ...loadProfile(), template: m.template })) {
+    toast("Impossible d'enregistrer sur cet appareil.");
+    return;
+  }
+  S.config.template = m.template;
+  S.program = program;
+  S.ctx = buildContext(program, S.start);
+  S.editing = false;
+  closeModal();
+  renderAll();
+  toast("Nouveau programme en place");
+}
+
+/* ----- effacer toutes les données ----- */
+function wipeData(btn) {
+  if (!btn.classList.contains("armed")) {
+    btn.classList.add("armed");
+    btn.textContent = "Confirmer : tout effacer sur ce téléphone";
+    return;
+  }
+  if (!clearAllData()) { toast("Impossible d'effacer les données."); return; }
+  window.location.reload();
 }
 
 /* ----- charges notées ----- */
@@ -1763,6 +1920,7 @@ const numText = (n) => (n == null ? "" : String(n).replace(".", ","));
 
 function settingsHTML(errorMsg) {
   const g = S.config.goal;
+  const tpl = TEMPLATES.find((t) => t.id === S.config.template);
   return sheet("Réglages", "Tout est enregistré sur ce téléphone", `
     <p class="t-eyebrow list-title">Sauvegarde</p>
     <div class="group-list">
@@ -1783,6 +1941,7 @@ function settingsHTML(errorMsg) {
       <label class="list-row"><span class="grow">Objectif (kg)</span>
         <input class="inline-input num" id="pf-to" inputmode="decimal" value="${esc(numText(g && g.to))}" placeholder="—"></label>
     </div>
+    <div class="group-list"><div class="list-row"><span class="grow">Début du suivi</span><span class="t-sub">${esc(formatDateFr(S.start))}</span></div></div>
     <p class="error" id="profile-error" role="alert" style="margin-top:-0.6rem"></p>
     <button class="btn filled wide press" data-action="save-profile">Enregistrer le profil</button>
     <p class="t-eyebrow list-title" style="margin-top:1.4rem">Séance</p>
@@ -1791,13 +1950,19 @@ function settingsHTML(errorMsg) {
         <input type="checkbox" class="switch" id="pref-autotimer" ${S.prefs.autoTimer ? "checked" : ""}></label>
     </div>
     <p class="t-eyebrow list-title">Programme</p>
-    <div class="group-list"><button class="list-row danger row-press" data-action="program-reset">Revenir au programme d'origine</button></div>
-    <p class="note pad">Pour modifier une séance : onglet Séances, puis « Modifier » au-dessus des exercices.</p>
+    <div class="group-list">
+      <button class="list-row tint row-press" data-action="open-templates">Repartir d'un modèle</button>
+      <button class="list-row danger row-press" data-action="program-reset">Revenir au programme d'origine</button>
+    </div>
+    <p class="note pad">${tpl ? `Modèle de départ : ${esc(tpl.name)}. ` : ""}Pour modifier une séance : onglet Séances, puis « Modifier » au-dessus des exercices.</p>
     <p class="t-eyebrow list-title">Application</p>
     <div class="group-list"><div class="list-row"><span class="grow">Version</span><b class="num">${esc(APP_VERSION)}</b></div></div>
     <p class="t-eyebrow list-title">Écran d'accueil</p>
     <div class="group-list"><ol class="steps"><li>Ouvre ce site dans Safari.</li><li>Touche Partager, puis « Sur l'écran d'accueil ».</li>
-      <li>Ouvre ensuite toujours Salle depuis l'icône.</li></ol></div>`);
+      <li>Ouvre ensuite toujours Salle depuis l'icône.</li></ol></div>
+    <p class="t-eyebrow list-title">Mes données</p>
+    <div class="group-list"><button class="list-row danger row-press" data-action="wipe-data">Effacer toutes mes données</button></div>
+    <p class="note pad">Efface tout ce que Salle garde sur ce téléphone et revient à l'accueil. Fais d'abord une sauvegarde si besoin.</p>`);
 }
 
 function openSettings(errorMsg) {
@@ -1808,16 +1973,12 @@ function openSettings(errorMsg) {
 
 function saveProfileFromForm() {
   const err = $("#profile-error");
-  const name = $("#pf-name").value.trim().slice(0, 40);
-  const opts = { min: 20, minInclusive: true, max: 400 };
-  const from = parseDecimalInput($("#pf-from").value, opts);
-  const to = parseDecimalInput($("#pf-to").value, opts);
-  if (!from.ok || !to.ok) { err.textContent = "Poids entre 20 et 400 kg."; return; }
-  if (from.empty !== to.empty) { err.textContent = "Remplis les deux poids, ou aucun."; return; }
-  const goal = from.empty ? null : { from: from.value, to: to.value };
-  if (!saveProfile({ firstName: name, goal })) { err.textContent = "Impossible d'enregistrer sur cet appareil."; return; }
-  S.config.firstName = name;
-  S.config.goal = goal;
+  const fields = readProfileFields("pf");
+  if (fields.error) { err.textContent = fields.error; return; }
+  // Garde la date de début et le modèle du profil.
+  if (!saveProfile({ ...loadProfile(), ...fields })) { err.textContent = "Impossible d'enregistrer sur cet appareil."; return; }
+  S.config.firstName = fields.firstName;
+  S.config.goal = fields.goal;
   closeModal();
   renderShell();
   renderAll();
@@ -1841,7 +2002,7 @@ function backupJSON() {
     const v = validateEntry(k, e.v, S.ctx);
     if (v.ok && v.value !== null) out[k] = v.value;
   }
-  const profile = { firstName: S.config.firstName || "", goal: S.config.goal || null };
+  const profile = { firstName: S.config.firstName || "", goal: S.config.goal || null, start: S.start, template: S.config.template || null };
   return JSON.stringify({ ...buildExport(out, S.start), profile, program: S.program }, null, 2);
 }
 
@@ -1874,35 +2035,73 @@ function exportCsv() {
   toast("Calendrier exporté");
 }
 
-async function handleImportFile(input) {
+/**
+ * Lit et vérifie un fichier de sauvegarde, sans rien modifier.
+ * La date de début vient du fichier (profil, sinon période) ; à défaut, celle du téléphone.
+ */
+function parseBackup(text, current) {
+  let obj = null;
+  try { obj = JSON.parse(text); } catch { return { ok: false, error: "Ce fichier n'est pas un JSON valide." }; }
+  let program = null;
+  const p = obj && obj.program;
+  if (p && Array.isArray(p.days) && checkProgram(p).length === 0) {
+    fixTueWedSwap(p); // sauvegarde faite avant l'inversion du 25/10
+    program = p;
+  }
+  const fp = obj && obj.profile && typeof obj.profile === "object" ? obj.profile : null;
+  const start = [fp && fp.start, obj && obj.period && obj.period.start].find(isValidISO) || current.start;
+  if (!start) return { ok: false, error: "Ce fichier n'indique pas de date de début." };
+  const template = fp && TEMPLATES.some((t) => t.id === fp.template) ? fp.template : current.template || "split5";
+  const r = validateImport(text, buildContext(program || templateProgram(template), start));
+  if (!r.ok) return r;
+  const profile = fp && typeof fp.firstName === "string"
+    ? { firstName: fp.firstName.slice(0, 40), goal: fp.goal && Number.isFinite(fp.goal.from) && Number.isFinite(fp.goal.to) ? fp.goal : null }
+    : {};
+  return { ok: true, entries: r.entries, count: r.count, program, start, template, profile };
+}
+
+/** Écrit la sauvegarde vérifiée puis relance l'app sur le profil restauré. */
+function applyBackup(b) {
+  if (b.program) saveProgramData(b.program);
+  saveProfile({ ...loadProfile(), ...b.profile, start: b.start, template: b.template });
+  const store = S.store || createLocalStore({ onChange() {}, onError: toast });
+  S.store = null; // pas de réaffichage avec l'ancienne période
+  store.setMany(b.entries);
+  store.markBackup(); // ce qu'on vient de restaurer est déjà dans un fichier
+  launch(loadProfile());
+  toast(`Sauvegarde restaurée : ${b.count} valeur${b.count > 1 ? "s" : ""}`);
+}
+
+async function readBackupFile(input, err) {
   const file = input.files && input.files[0];
   input.value = "";
-  if (!file) return;
+  if (!file) return null;
+  if (file.size > LIMITS.importBytes) { err("Fichier trop volumineux (1 Mo maximum)."); return null; }
+  try { return { name: file.name, text: await file.text() }; } catch { err("Impossible de lire ce fichier."); return null; }
+}
+
+async function handleImportFile(input) {
   const err = (m) => { const el = $("#settings-error"); if (el) el.textContent = m; };
-  if (file.size > LIMITS.importBytes) return err("Fichier trop volumineux (1 Mo maximum).");
-  let text;
-  try { text = await file.text(); } catch { return err("Impossible de lire ce fichier."); }
-  let program = null;
-  try {
-    const p = JSON.parse(text).program;
-    if (p && Array.isArray(p.days) && checkProgram(p).length === 0) {
-      fixTueWedSwap(p); // sauvegarde faite avant l'inversion du 25/10
-      program = p;
-    }
-  } catch { /* vérifié juste après */ }
-  const r = validateImport(text, program ? buildContext(program, S.start) : S.ctx);
+  const f = await readBackupFile(input, err);
+  if (!f) return;
+  const r = parseBackup(f.text, { start: S.start, template: S.config.template });
   if (!r.ok) return err(r.error);
-  let profile = null;
-  try {
-    const p = JSON.parse(text).profile;
-    if (p && typeof p.firstName === "string") profile = { firstName: p.firstName.slice(0, 40), goal: p.goal && Number.isFinite(p.goal.from) && Number.isFinite(p.goal.to) ? p.goal : null };
-  } catch { /* déjà validé */ }
-  S.modal = { kind: "import", entries: r.entries, count: r.count, profile, program };
-  setSheetContent(sheet("Restaurer cette sauvegarde ?", esc(file.name), `
+  S.modal = { kind: "import", backup: r };
+  setSheetContent(sheet("Restaurer cette sauvegarde ?", esc(f.name), `
     <div class="group-list"><div class="list-row result"><small>Valeurs à restaurer</small><b>${r.count}</b></div></div>
-    <p class="note pad">Les éléments du fichier remplacent leurs valeurs actuelles ; tout le reste est conservé.${program ? " Ton programme sera aussi remplacé par celui du fichier." : ""} Rien ne change tant que tu n'as pas confirmé.</p>
+    <p class="note pad">Les éléments du fichier remplacent leurs valeurs actuelles ; tout le reste est conservé.${r.program ? " Ton programme sera aussi remplacé par celui du fichier." : ""}${r.start !== S.start ? ` Le suivi commencera le ${esc(formatDateFr(r.start))}.` : ""} Rien ne change tant que tu n'as pas confirmé.</p>
     <div class="actions-2"><button class="btn press" data-action="import-cancel">Annuler</button>
     <button class="btn filled press" data-action="import-confirm">Restaurer</button></div>`));
+}
+
+/** Accueil → « J'ai déjà une sauvegarde » : restaure directement (rien n'existe encore). */
+async function handleWelcomeImport(input) {
+  const err = (m) => { $("#wl-error").textContent = m; };
+  const f = await readBackupFile(input, err);
+  if (!f) return;
+  const r = parseBackup(f.text, { start: null, template: null });
+  if (!r.ok) return err(r.error);
+  applyBackup(r);
 }
 
 /* ------------------------------------------------------------------ minuteur */
@@ -2108,25 +2307,16 @@ function onAction(el) {
     case "export-csv": return exportCsv();
     case "import-cancel": return openSettings();
     case "import-confirm": {
-      const m = S.modal;
-      if (m.program) {
-        saveProgramData(m.program);
-        S.program = m.program;
-        S.ctx = buildContext(m.program, S.start);
-      }
-      S.store.setMany(m.entries);
-      if (m.profile) {
-        saveProfile(m.profile);
-        S.config.firstName = m.profile.firstName;
-        S.config.goal = m.profile.goal;
-        renderShell();
-        renderAll();
-      }
-      S.store.markBackup(); // ce qu'on vient de restaurer est déjà dans un fichier
-      closeModal();
-      toast(`Sauvegarde restaurée : ${m.count} valeur${m.count > 1 ? "s" : ""}`);
+      const b = S.modal.backup;
+      closeModal(true);
+      applyBackup(b);
       return;
     }
+    case "pick-template": return pickTemplate(el.dataset.template);
+    case "welcome-start": return welcomeStart();
+    case "open-templates": return openTemplatePicker();
+    case "template-apply": return applyTemplate();
+    case "wipe-data": return wipeData(el);
     default:
   }
 }
@@ -2178,6 +2368,7 @@ document.addEventListener("change", (e) => {
   else if (e.target.id === "ef-bw") { const r = $("#ef-pct-row"); if (r) r.hidden = e.target.checked; }
   else if (e.target.id === "ef-drop") { const r = $("#ef-drop-row"); if (r) r.hidden = !e.target.checked; }
   else if (e.target.id === "import-file") handleImportFile(e.target);
+  else if (e.target.id === "welcome-import") handleWelcomeImport(e.target);
 });
 
 document.addEventListener("keydown", (e) => {
@@ -2187,6 +2378,14 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && open && e.target.id && e.target.id.startsWith("ef-") && e.target.tagName === "INPUT" && e.target.type !== "checkbox") {
     e.preventDefault();
     saveExEditor();
+    return;
+  }
+  if (e.key === "Enter" && e.target.id && e.target.id.startsWith("wl-")) {
+    e.preventDefault();
+    const fields = ["wl-name", "wl-from", "wl-to"];
+    const i = fields.indexOf(e.target.id);
+    if (i >= 0 && i < fields.length - 1) $(`#${fields[i + 1]}`).focus();
+    else e.target.blur();
     return;
   }
   if (e.key === "Enter" && open && e.target.id && e.target.id.startsWith("pf-")) {

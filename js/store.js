@@ -1,5 +1,6 @@
 // Stockage local : tout reste sur cet appareil, dans l'app installée sur l'écran d'accueil.
 // La copie de sécurité se fait par un fichier dans l'app Fichiers (voir main.js).
+import { isValidISO } from "./core.js";
 
 const PREFIX = "salle:v1:";
 
@@ -23,16 +24,36 @@ function write(key, value) {
   }
 }
 
+/** Profil de la personne : prénom, objectif, début du suivi (null tant que l'accueil n'est pas fait) et modèle choisi. */
 export function loadProfile() {
   const p = read("profile", {});
   return {
     firstName: typeof p.firstName === "string" ? p.firstName.slice(0, 40) : "",
     goal: p.goal && Number.isFinite(p.goal.from) && Number.isFinite(p.goal.to) ? p.goal : null,
+    start: isValidISO(p.start) ? p.start : null,
+    template: typeof p.template === "string" ? p.template.slice(0, 40) : null,
   };
 }
 
 export function saveProfile(profile) {
   return write("profile", profile);
+}
+
+/** Des données existent-elles déjà sur ce téléphone (créées avant l'arrivée des profils) ? */
+export function hasStoredData() {
+  const entries = read("entries", {});
+  const p = read("profile", {});
+  return Object.keys(entries).length > 0 || read("program", null) !== null || !!(p.firstName || p.goal);
+}
+
+/** Efface toutes les données de l'app sur ce téléphone. */
+export function clearAllData() {
+  try {
+    for (const k of Object.keys(localStorage)) if (k.startsWith(PREFIX)) localStorage.removeItem(k);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Exécute une seule fois une mise à jour des données enregistrées. */
